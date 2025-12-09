@@ -64,6 +64,7 @@ type RoundEventData struct {
 	Headshot    *int
 	Bodyshot    *int
 	Legshot     *int
+	Weapon      *string // "Spike" for bomb deaths, ability name, or nil for weapons
 }
 
 // RoundPlayerStateData holds player state per round.
@@ -101,8 +102,8 @@ func BuildAggregates(data *MatchData) (*AggregateSet, error) {
 	// Step 3: Compute clutches (depends on events + rounds + players)
 	clutchResults := ComputeClutches(data.Rounds, data.RoundEvents, playerTeam, teamPlayers)
 
-	// Step 4: Build round player stats (uses trades, entries, clutches)
-	roundPlayerStats := BuildRoundPlayerStats(data, trades, entries, clutchResults, now)
+	// Step 4: Build round player stats (uses trades, entries, clutches, playerTeam for suicide/teamkill)
+	roundPlayerStats := BuildRoundPlayerStats(data, trades, entries, clutchResults, playerTeam, now)
 
 	// Step 5: Build match player stats (aggregates round stats + clutches)
 	matchPlayerStats := BuildMatchPlayerStats(data, roundPlayerStats, clutchResults, now)

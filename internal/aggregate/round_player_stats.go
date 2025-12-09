@@ -12,6 +12,7 @@ func BuildRoundPlayerStats(
 	trades map[uuid.UUID]map[uuid.UUID]*TradeResult,
 	entries map[uuid.UUID]*EntryResult,
 	clutches []ClutchResult,
+	playerTeam map[uuid.UUID]uuid.UUID,
 	now time.Time,
 ) []RoundPlayerStatsRow {
 	// Build helper maps
@@ -27,8 +28,8 @@ func BuildRoundPlayerStats(
 		events := eventsByRound[round.ID]
 		roundPlayerStates := rpsByRound[round.ID]
 
-		// Compute combat stats for this round
-		combatStats := computeRoundCombatStats(events)
+		// Compute combat stats for this round (including suicide/teamkill detection)
+		combatStats := computeRoundCombatStats(events, playerTeam)
 
 		for _, rps := range roundPlayerStates {
 			stats := combatStats[rps.PlayerID]
@@ -105,6 +106,10 @@ func BuildRoundPlayerStats(
 				Revived:          0,
 				FirstKill:        firstKill,
 				FirstDeath:       firstDeath,
+				Suicide:          stats.Suicides > 0,
+				KilledByTeammate: stats.KilledByTeammate > 0,
+				KilledTeammate:   stats.TeamKills,
+				KilledBySpike:    stats.KilledBySpike > 0,
 				TradeKill:        tradeKills,
 				TradedDeath:      tradedDeaths,
 				ClutchID:         clutchID,
@@ -175,7 +180,8 @@ func groupRPSByRound(states []RoundPlayerStateData) map[uuid.UUID][]RoundPlayerS
 }
 
 // computeRoundCombatStats calculates combat statistics from events.
-func computeRoundCombatStats(events []RoundEventData) map[uuid.UUID]*CombatStats {
+// playerTeam is used to detect teamkills (killer and victim on same team).
+func computeRoundCombatStats(events []RoundEventData, playerTeam map[uuid.UUID]uuid.UUID) map[uuid.UUID]*CombatStats {
 	stats := make(map[uuid.UUID]*CombatStats)
 
 	getOrCreate := func(id uuid.UUID) *CombatStats {
@@ -188,23 +194,58 @@ func computeRoundCombatStats(events []RoundEventData) map[uuid.UUID]*CombatStats
 	for _, e := range events {
 		switch e.EventType {
 		case "kill":
-			// Killer stats
-			killer := getOrCreate(e.PlayerID)
-			killer.Kills++
+			// Check if this is a self-kill (killer == victim)
+			isSelfKill := e.VictimID != nil && e.PlayerID == *e.VictimID
 
-			// Determine kill type based on headshot/bodyshot/legshot
-			if e.Headshot != nil && *e.Headshot > 0 {
-				killer.HeadshotKills++
-			} else if e.Bodyshot != nil && *e.Bodyshot > 0 {
-				killer.BodyshotKills++
-			} else if e.Legshot != nil && *e.Legshot > 0 {
-				killer.LegshotKills++
+			// Check if self-kill is from spike explosion
+			isSpikeDeath := isSelfKill && e.Weapon != nil && *e.Weapon == "Spike"
+
+			// Check if this is a teamkill (same team, different player)
+			isTeamkill := false
+			if e.VictimID != nil && !isSelfKill {
+				killerTeam, killerHasTeam := playerTeam[e.PlayerID]
+				victimTeam, victimHasTeam := playerTeam[*e.VictimID]
+				if killerHasTeam && victimHasTeam && killerTeam == victimTeam {
+					isTeamkill = true
+				}
 			}
 
-			// Victim stats
-			if e.VictimID != nil {
+			if isSpikeDeath {
+				// Spike death: track separately, no kill credit, not a suicide
 				victim := getOrCreate(*e.VictimID)
 				victim.Deaths++
+				victim.KilledBySpike++
+			} else if isSelfKill {
+				// True suicide: track as suicide, no kill credit
+				victim := getOrCreate(*e.VictimID)
+				victim.Deaths++
+				victim.Suicides++
+			} else if isTeamkill {
+				// Teamkill: track separately, no kill credit
+				killer := getOrCreate(e.PlayerID)
+				killer.TeamKills++
+				victim := getOrCreate(*e.VictimID)
+				victim.Deaths++
+				victim.KilledByTeammate++
+			} else {
+				// Normal kill
+				killer := getOrCreate(e.PlayerID)
+				killer.Kills++
+
+				// Determine kill type based on headshot/bodyshot/legshot
+				if e.Headshot != nil && *e.Headshot > 0 {
+					killer.HeadshotKills++
+				} else if e.Bodyshot != nil && *e.Bodyshot > 0 {
+					killer.BodyshotKills++
+				} else if e.Legshot != nil && *e.Legshot > 0 {
+					killer.LegshotKills++
+				}
+
+				// Victim gets a death
+				if e.VictimID != nil {
+					victim := getOrCreate(*e.VictimID)
+					victim.Deaths++
+				}
 			}
 
 		case "damage":

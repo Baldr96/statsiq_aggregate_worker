@@ -58,6 +58,10 @@ type RoundPlayerStatsRow struct {
 	Revived          int
 	FirstKill        bool
 	FirstDeath       bool
+	Suicide          bool // True if player died to themselves (not spike)
+	KilledByTeammate bool // True if player was killed by a teammate
+	KilledTeammate   int  // Count of teammates killed this round
+	KilledBySpike    bool // True if player died to the spike explosion
 	TradeKill        int
 	TradedDeath      int
 	ClutchID         *uuid.UUID
@@ -84,7 +88,10 @@ type MatchPlayerStatsRow struct {
 	FirstDeaths     int
 	TradeKills      int
 	TradedDeaths    int
-	MultiKills      int  // Total rounds with 2+ kills
+	Suicides        int // Total suicides in match
+	TeamKills       int // Total teammate kills in match
+	DeathsBySpike   int // Total deaths by spike explosion
+	MultiKills      int // Total rounds with 2+ kills
 	DoubleKills     *int // Rounds with exactly 2 kills
 	TripleKills     *int // Rounds with exactly 3 kills
 	QuadraKills     *int // Rounds with exactly 4 kills
@@ -141,6 +148,9 @@ type TeamMatchStatsRow struct {
 	FirstDeaths         int
 	TradeKills          int
 	TradedDeaths        int
+	Suicides            int // Team total suicides
+	TeamKills           int // Team total teammate kills
+	DeathsBySpike       int // Team total deaths by spike explosion
 	Multikill           int
 	ClutchesPlayed      int
 	ClutchesWon         int
@@ -182,8 +192,11 @@ type TeamMatchSideStatsRow struct {
 	FirstDeaths    int
 	TradeKills     int
 	TradedDeaths   int
+	Suicides       int // Side-specific total suicides
+	TeamKills      int // Side-specific total teammate kills
+	DeathsBySpike  int // Side-specific total deaths by spike explosion
 	Multikill      int
-	ClutchesPlayed     int
+	ClutchesPlayed int
 	ClutchesWon        int
 	ClutchesLoss       int
 	ClutchesWR         float64
@@ -245,17 +258,21 @@ type ClutchState struct {
 
 // CombatStats holds combat statistics for a player in a round.
 type CombatStats struct {
-	Kills         int16
-	Deaths        int16
-	Assists       int16
-	HeadshotKills int
-	BodyshotKills int
-	LegshotKills  int
-	HeadshotHit   int
-	BodyshotHit   int
-	LegshotHit    int
-	DamageGiven   int
-	DamageTaken   int
+	Kills            int16
+	Deaths           int16
+	Assists          int16
+	HeadshotKills    int
+	BodyshotKills    int
+	LegshotKills     int
+	HeadshotHit      int
+	BodyshotHit      int
+	LegshotHit       int
+	DamageGiven      int
+	DamageTaken      int
+	Suicides         int // Self-inflicted deaths (not spike)
+	TeamKills        int // Kills on teammates
+	KilledByTeammate int // Deaths from teammates
+	KilledBySpike    int // Deaths from spike explosion
 }
 
 // TeamRoundInfo holds round analysis for a team.

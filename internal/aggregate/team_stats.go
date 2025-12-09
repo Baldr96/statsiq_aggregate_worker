@@ -55,6 +55,7 @@ func BuildTeamMatchStats(
 		var totalDamageGiven, totalDamageTaken int
 		var totalFirstKills, totalFirstDeaths int
 		var totalTradeKills, totalTradedDeaths int
+		var totalSuicides, totalTeamKills, totalDeathsBySpike int
 		multiKills := 0
 
 		// Calculate per-player ratios for averaging
@@ -87,6 +88,13 @@ func BuildTeamMatchStats(
 				if rs.FirstDeath {
 					totalFirstDeaths++
 				}
+				if rs.Suicide {
+					totalSuicides++
+				}
+				if rs.KilledBySpike {
+					totalDeathsBySpike++
+				}
+				totalTeamKills += rs.KilledTeammate
 				if rs.Kills >= 2 {
 					multiKills++
 				}
@@ -195,6 +203,9 @@ func BuildTeamMatchStats(
 			FirstDeaths:         totalFirstDeaths,
 			TradeKills:          totalTradeKills,
 			TradedDeaths:        totalTradedDeaths,
+			Suicides:            totalSuicides,
+			TeamKills:           totalTeamKills,
+			DeathsBySpike:       totalDeathsBySpike,
 			Multikill:           multiKills,
 			ClutchesPlayed:      clutchesPlayed,
 			ClutchesWon:         clutchesWon,

@@ -38,6 +38,7 @@ func BuildMatchPlayerStats(
 		var totalTradeKills, totalTradedDeaths int
 		var totalHeadshotKills, totalBodyshotKills, totalLegshotKills int
 		var totalHeadshotHit, totalBodyshotHit, totalLegshotHit int
+		var totalSuicides, totalTeamKills, totalDeathsBySpike int
 
 		doubleKills := 0
 		tripleKills := 0
@@ -67,6 +68,13 @@ func BuildMatchPlayerStats(
 			if rs.FirstDeath {
 				totalFirstDeaths++
 			}
+			if rs.Suicide {
+				totalSuicides++
+			}
+			if rs.KilledBySpike {
+				totalDeathsBySpike++
+			}
+			totalTeamKills += rs.KilledTeammate
 
 			// Count multi-kills by round
 			kills := int(rs.Kills)
@@ -166,6 +174,9 @@ func BuildMatchPlayerStats(
 			FirstDeaths:     totalFirstDeaths,
 			TradeKills:      totalTradeKills,
 			TradedDeaths:    totalTradedDeaths,
+			Suicides:        totalSuicides,
+			TeamKills:       totalTeamKills,
+			DeathsBySpike:   totalDeathsBySpike,
 			MultiKills:      multiKills,
 			DoubleKills:     &doubleKills,
 			TripleKills:     &tripleKills,
