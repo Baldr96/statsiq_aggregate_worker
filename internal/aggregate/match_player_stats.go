@@ -11,6 +11,7 @@ func BuildMatchPlayerStats(
 	data *MatchData,
 	roundPlayerStats []RoundPlayerStatsRow,
 	clutches []ClutchResult,
+	multiKillResults map[uuid.UUID]map[uuid.UUID]*MultiKillResult,
 	now time.Time,
 ) []MatchPlayerStatsRow {
 	// Calculate is_overtime at match level
@@ -39,15 +40,11 @@ func BuildMatchPlayerStats(
 		var totalHeadshotKills, totalBodyshotKills, totalLegshotKills int
 		var totalHeadshotHit, totalBodyshotHit, totalLegshotHit int
 		var totalSuicides, totalTeamKills, totalDeathsBySpike int
-
-		doubleKills := 0
-		tripleKills := 0
-		quadraKills := 0
-		pentaKills := 0
-		multiKills := 0
+		var totalCS float64 // Sum of Combat Scores for ACS calculation
 		kastRounds := 0
 
 		for _, rs := range roundStats {
+			totalCS += rs.CS
 			totalKills += int(rs.Kills)
 			totalDeaths += int(rs.Deaths)
 			totalAssists += int(rs.Assists)
@@ -76,31 +73,24 @@ func BuildMatchPlayerStats(
 			}
 			totalTeamKills += rs.KilledTeammate
 
-			// Count multi-kills by round
-			kills := int(rs.Kills)
-			if kills == 2 {
-				doubleKills++
-			} else if kills == 3 {
-				tripleKills++
-			} else if kills == 4 {
-				quadraKills++
-			} else if kills >= 5 {
-				pentaKills++
-			}
-			if kills >= 2 {
-				multiKills++
-			}
-
 			// KAST: rounds with Kill, Assist, Survive, or Traded
 			if rs.Kills > 0 || rs.Assists > 0 || rs.Survived || rs.TradedDeath > 0 {
 				kastRounds++
 			}
 		}
 
+		// Get multi-kill stats from time-based detection (not round-based kill count)
+		playerMultiKills := AggregateMultiKills(multiKillResults, playerID)
+		multiKills := playerMultiKills.MultiKills
+		doubleKills := playerMultiKills.DoubleKills
+		tripleKills := playerMultiKills.TripleKills
+		quadraKills := playerMultiKills.QuadraKills
+		pentaKills := playerMultiKills.PentaKills
+
 		roundsPlayed := len(roundStats)
 
 		// Calculate ratios
-		var kd, adr, hsPercent, kast float64
+		var kd, adr, acs, hsPercent, kast float64
 
 		if totalDeaths > 0 {
 			kd = float64(totalKills) / float64(totalDeaths)
@@ -108,6 +98,7 @@ func BuildMatchPlayerStats(
 
 		if roundsPlayed > 0 {
 			adr = float64(totalDamageGiven) / float64(roundsPlayed)
+			acs = totalCS / float64(roundsPlayed) // Average Combat Score
 			kast = float64(kastRounds) / float64(roundsPlayed) * 100
 		}
 
@@ -164,6 +155,7 @@ func BuildMatchPlayerStats(
 			ID:              uuid.New(),
 			PlayerID:        playerID,
 			MatchID:         &data.MatchID,
+			ACS:             &acs,
 			KD:              &kd,
 			KAST:            &kast,
 			ADR:             &adr,

@@ -12,6 +12,7 @@ func BuildTeamMatchSideStats(
 	rounds []RoundData,
 	roundPlayerStats []RoundPlayerStatsRow,
 	clutches []ClutchResult,
+	multiKillResults map[uuid.UUID]map[uuid.UUID]*MultiKillResult,
 	playerTeam map[uuid.UUID]uuid.UUID,
 	now time.Time,
 ) []TeamMatchSideStatsRow {
@@ -68,15 +69,16 @@ func BuildTeamMatchSideStats(
 			var totalFirstKills, totalFirstDeaths int
 			var totalTradeKills, totalTradedDeaths int
 			var totalSuicides, totalTeamKills, totalDeathsBySpike int
-			multiKills := 0
+			totalMultiKills := 0
 
 			type PlayerRatios struct {
 				KPR, DPR, APR, ADR, ACS float64
 			}
 			var playerRatios []PlayerRatios
 
-			for _, playerRoundStats := range playerStatsMap {
+			for playerID, playerRoundStats := range playerStatsMap {
 				var pKills, pDeaths, pAssists, pDamage int
+				var pCS float64 // Total Combat Score for this player
 				pRounds := len(playerRoundStats)
 
 				for _, rs := range playerRoundStats {
@@ -84,6 +86,7 @@ func BuildTeamMatchSideStats(
 					pDeaths += int(rs.Deaths)
 					pAssists += int(rs.Assists)
 					pDamage += rs.DamageGiven
+					pCS += rs.CS
 
 					totalKills += int(rs.Kills)
 					totalDeaths += int(rs.Deaths)
@@ -106,10 +109,11 @@ func BuildTeamMatchSideStats(
 						totalDeathsBySpike++
 					}
 					totalTeamKills += rs.KilledTeammate
-					if rs.Kills >= 2 {
-						multiKills++
-					}
 				}
+
+				// Aggregate multi-kills for this player for these specific rounds
+				playerMultiKills := AggregateMultiKillsForRounds(multiKillResults, playerID, roundIDs)
+				totalMultiKills += playerMultiKills.MultiKills
 
 				// Calculate individual player ratios
 				if pRounds > 0 {
@@ -118,6 +122,7 @@ func BuildTeamMatchSideStats(
 						DPR: float64(pDeaths) / float64(pRounds),
 						APR: float64(pAssists) / float64(pRounds),
 						ADR: float64(pDamage) / float64(pRounds),
+						ACS: pCS / float64(pRounds), // Average Combat Score per round
 					})
 				}
 			}
@@ -222,7 +227,7 @@ func BuildTeamMatchSideStats(
 				Suicides:           totalSuicides,
 				TeamKills:          totalTeamKills,
 				DeathsBySpike:      totalDeathsBySpike,
-				Multikill:          multiKills,
+				Multikill:          totalMultiKills,
 				ClutchesPlayed:     clutchesPlayed,
 				ClutchesWon:        clutchesWon,
 				ClutchesLoss:       clutchesLoss,

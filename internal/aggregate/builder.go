@@ -102,17 +102,20 @@ func BuildAggregates(data *MatchData) (*AggregateSet, error) {
 	// Step 3: Compute clutches (depends on events + rounds + players)
 	clutchResults := ComputeClutches(data.Rounds, data.RoundEvents, playerTeam, teamPlayers)
 
-	// Step 4: Build round player stats (uses trades, entries, clutches, playerTeam for suicide/teamkill)
+	// Step 4: Compute multi-kills (depends only on events + playerTeam)
+	multiKills := ComputeMultiKills(data.RoundEvents, playerTeam)
+
+	// Step 5: Build round player stats (uses trades, entries, clutches, playerTeam for suicide/teamkill)
 	roundPlayerStats := BuildRoundPlayerStats(data, trades, entries, clutchResults, playerTeam, now)
 
-	// Step 5: Build match player stats (aggregates round stats + clutches)
-	matchPlayerStats := BuildMatchPlayerStats(data, roundPlayerStats, clutchResults, now)
+	// Step 6: Build match player stats (aggregates round stats + clutches + multi-kills)
+	matchPlayerStats := BuildMatchPlayerStats(data, roundPlayerStats, clutchResults, multiKills, now)
 
-	// Step 6: Build team match stats (aggregates round stats by team)
-	teamMatchStats := BuildTeamMatchStats(data, data.Rounds, roundPlayerStats, clutchResults, playerTeam, now)
+	// Step 7: Build team match stats (aggregates round stats by team)
+	teamMatchStats := BuildTeamMatchStats(data, data.Rounds, roundPlayerStats, clutchResults, multiKills, playerTeam, now)
 
-	// Step 7: Build team side stats (filters by Attack/Defense)
-	teamMatchSideStats := BuildTeamMatchSideStats(data, data.Rounds, roundPlayerStats, clutchResults, playerTeam, now)
+	// Step 8: Build team side stats (filters by Attack/Defense)
+	teamMatchSideStats := BuildTeamMatchSideStats(data, data.Rounds, roundPlayerStats, clutchResults, multiKills, playerTeam, now)
 
 	// Build clutch rows for database
 	clutchRows := buildClutchRows(clutchResults, playerTeam, teamPlayers, now)

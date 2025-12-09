@@ -82,6 +82,12 @@ func BuildRoundPlayerStats(
 				}
 			}
 
+			// Get Combat Score from round_player_state.score
+			var cs float64
+			if rps.Score != nil {
+				cs = float64(*rps.Score)
+			}
+
 			rows = append(rows, RoundPlayerStatsRow{
 				ID:               uuid.New(),
 				RoundID:          round.ID,
@@ -89,7 +95,7 @@ func BuildRoundPlayerStats(
 				LoadoutID:        loadoutID,
 				Agent:            playerAgent[rps.PlayerID],
 				Rating:           0, // TODO: Calculate rating
-				CS:               0, // TODO: Calculate combat score
+				CS:               cs,
 				Kills:            stats.Kills,
 				Deaths:           stats.Deaths,
 				Assists:          stats.Assists,
