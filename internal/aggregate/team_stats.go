@@ -57,7 +57,11 @@ func BuildTeamMatchStats(
 		var totalFirstKills, totalFirstDeaths int
 		var totalTradeKills, totalTradedDeaths int
 		var totalSuicides, totalTeamKills, totalDeathsBySpike int
-		totalMultiKills := 0
+		totalChainKills := 0
+		totalDoubleKills := 0
+		totalTripleKills := 0
+		totalQuadraKills := 0
+		totalPentaKills := 0
 
 		// Calculate per-player ratios for averaging
 		type PlayerRatios struct {
@@ -91,18 +95,20 @@ func BuildTeamMatchStats(
 				if rs.FirstDeath {
 					totalFirstDeaths++
 				}
-				if rs.Suicide {
-					totalSuicides++
-				}
+				totalSuicides += rs.Suicides
 				if rs.KilledBySpike {
 					totalDeathsBySpike++
 				}
-				totalTeamKills += rs.KilledTeammate
+				totalTeamKills += rs.TeammatesKilled
 			}
 
 			// Aggregate multi-kills for this player using time-based detection
 			playerMultiKills := AggregateMultiKills(multiKillResults, playerID)
-			totalMultiKills += playerMultiKills.MultiKills
+			totalChainKills += playerMultiKills.MultiKills
+			totalDoubleKills += playerMultiKills.DoubleKills
+			totalTripleKills += playerMultiKills.TripleKills
+			totalQuadraKills += playerMultiKills.QuadraKills
+			totalPentaKills += playerMultiKills.PentaKills
 
 			// Calculate individual player ratios
 			if pRounds > 0 {
@@ -202,16 +208,21 @@ func BuildTeamMatchStats(
 			AvgADR:              avgADR,
 			AvgACS:              avgACS,
 			DamageDelta:         damageDelta,
-			TotalKills:          totalKills,
-			TotalDeaths:         totalDeaths,
+			Kills:               totalKills,
+			Deaths:              totalDeaths,
 			FirstKills:          totalFirstKills,
 			FirstDeaths:         totalFirstDeaths,
 			TradeKills:          totalTradeKills,
 			TradedDeaths:        totalTradedDeaths,
 			Suicides:            totalSuicides,
-			TeamKills:           totalTeamKills,
+			TeammatesKilled:     totalTeamKills,
 			DeathsBySpike:       totalDeathsBySpike,
-			Multikill:           totalMultiKills,
+			ChainKills:          totalChainKills,
+			DoubleKills:         totalDoubleKills,
+			TripleKills:         totalTripleKills,
+			QuadraKills:         totalQuadraKills,
+			PentaKills:          totalPentaKills,
+			MultiKills:          totalDoubleKills + totalTripleKills + totalQuadraKills + totalPentaKills,
 			ClutchesPlayed:      clutchesPlayed,
 			ClutchesWon:         clutchesWon,
 			ClutchesLoss:        clutchesLoss,
@@ -264,3 +275,5 @@ func analyzeRoundsForTeams(rounds []RoundData, playerTeam map[uuid.UUID]uuid.UUI
 
 	return info
 }
+
+

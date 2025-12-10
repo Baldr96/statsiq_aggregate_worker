@@ -64,7 +64,8 @@ type RoundEventData struct {
 	Headshot    *int
 	Bodyshot    *int
 	Legshot     *int
-	Weapon      *string // "Spike" for bomb deaths, ability name, or nil for weapons
+	Weapon      *string     // "Spike" for bomb deaths, ability name, or nil for weapons
+	Assistants  []uuid.UUID // Player UUIDs who assisted in this kill
 }
 
 // RoundPlayerStateData holds player state per round.

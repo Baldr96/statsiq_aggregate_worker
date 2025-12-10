@@ -112,9 +112,9 @@ func BuildRoundPlayerStats(
 				Revived:          0,
 				FirstKill:        firstKill,
 				FirstDeath:       firstDeath,
-				Suicide:          stats.Suicides > 0,
-				KilledByTeammate: stats.KilledByTeammate > 0,
-				KilledTeammate:   stats.TeamKills,
+				Suicides:         stats.Suicides,
+				DeathsByTeammate: stats.KilledByTeammate,
+				TeammatesKilled:  stats.TeammatesKilled,
 				KilledBySpike:    stats.KilledBySpike > 0,
 				TradeKill:        tradeKills,
 				TradedDeath:      tradedDeaths,
@@ -229,7 +229,7 @@ func computeRoundCombatStats(events []RoundEventData, playerTeam map[uuid.UUID]u
 			} else if isTeamkill {
 				// Teamkill: track separately, no kill credit
 				killer := getOrCreate(e.PlayerID)
-				killer.TeamKills++
+				killer.TeammatesKilled++
 				victim := getOrCreate(*e.VictimID)
 				victim.Deaths++
 				victim.KilledByTeammate++
@@ -251,6 +251,12 @@ func computeRoundCombatStats(events []RoundEventData, playerTeam map[uuid.UUID]u
 				if e.VictimID != nil {
 					victim := getOrCreate(*e.VictimID)
 					victim.Deaths++
+				}
+
+				// Count assists for each assistant
+				for _, assistantID := range e.Assistants {
+					assistant := getOrCreate(assistantID)
+					assistant.Assists++
 				}
 			}
 

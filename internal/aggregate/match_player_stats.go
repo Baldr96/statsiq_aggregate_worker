@@ -65,13 +65,11 @@ func BuildMatchPlayerStats(
 			if rs.FirstDeath {
 				totalFirstDeaths++
 			}
-			if rs.Suicide {
-				totalSuicides++
-			}
+			totalSuicides += rs.Suicides
 			if rs.KilledBySpike {
 				totalDeathsBySpike++
 			}
-			totalTeamKills += rs.KilledTeammate
+			totalTeamKills += rs.TeammatesKilled
 
 			// KAST: rounds with Kill, Assist, Survive, or Traded
 			if rs.Kills > 0 || rs.Assists > 0 || rs.Survived || rs.TradedDeath > 0 {
@@ -167,13 +165,14 @@ func BuildMatchPlayerStats(
 			TradeKills:      totalTradeKills,
 			TradedDeaths:    totalTradedDeaths,
 			Suicides:        totalSuicides,
-			TeamKills:       totalTeamKills,
+			TeammatesKilled: totalTeamKills,
 			DeathsBySpike:   totalDeathsBySpike,
-			MultiKills:      multiKills,
+			ChainKills:      multiKills,
 			DoubleKills:     &doubleKills,
 			TripleKills:     &tripleKills,
 			QuadraKills:     &quadraKills,
 			PentaKills:      &pentaKills,
+			MultiKills:      doubleKills + tripleKills + quadraKills + pentaKills,
 			ClutchesPlayed:  clutchesPlayed,
 			ClutchesWon:     clutchesWon,
 			V1Played:        &v1Played,
@@ -195,8 +194,10 @@ func BuildMatchPlayerStats(
 			LegshotHit:      &totalLegshotHit,
 			DamageGiven:     totalDamageGiven,
 			DamageTaken:     totalDamageTaken,
+			ImpactScore:     new(float64), // Default to 0.0
 			MatchesPlayed:   1,
 			RoundsPlayed:    roundsPlayed,
+			WinRate:         new(float64), // Default to 0.0
 			IsOvertime:      isOvertime,
 			CreatedAt:       now,
 		}

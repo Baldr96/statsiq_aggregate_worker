@@ -58,9 +58,9 @@ type RoundPlayerStatsRow struct {
 	Revived          int
 	FirstKill        bool
 	FirstDeath       bool
-	Suicide          bool // True if player died to themselves (not spike)
-	KilledByTeammate bool // True if player was killed by a teammate
-	KilledTeammate   int  // Count of teammates killed this round
+	Suicides         int // Count of suicides this round (not spike deaths)
+	DeathsByTeammate int // Count of deaths by teammate this round
+	TeammatesKilled  int // Count of teammates killed this round
 	KilledBySpike    bool // True if player died to the spike explosion
 	TradeKill        int
 	TradedDeath      int
@@ -89,13 +89,14 @@ type MatchPlayerStatsRow struct {
 	TradeKills      int
 	TradedDeaths    int
 	Suicides        int // Total suicides in match
-	TeamKills       int // Total teammate kills in match
+	TeammatesKilled int // Total teammate kills in match
 	DeathsBySpike   int // Total deaths by spike explosion
-	MultiKills      int // Total rounds with 2+ kills
+	ChainKills      int // Total chain kills (rounds with 2+ kills)
 	DoubleKills     *int // Rounds with exactly 2 kills
 	TripleKills     *int // Rounds with exactly 3 kills
 	QuadraKills     *int // Rounds with exactly 4 kills
 	PentaKills      *int // Rounds with exactly 5 kills
+	MultiKills      int  // Sum of double+triple+quadra+penta kills
 	ClutchesPlayed  int
 	ClutchesWon     int
 	V1Played        *int
@@ -141,17 +142,22 @@ type TeamMatchStatsRow struct {
 	AvgAPR              float64 // Average assists per round
 	AvgADR              float64 // Average damage per round
 	AvgACS              float64 // Average combat score
-	DamageDelta         float64 // Damage given - damage taken
-	TotalKills          int
-	TotalDeaths         int
-	FirstKills          int
-	FirstDeaths         int
-	TradeKills          int
-	TradedDeaths        int
-	Suicides            int // Team total suicides
-	TeamKills           int // Team total teammate kills
-	DeathsBySpike       int // Team total deaths by spike explosion
-	Multikill           int
+	DamageDelta     float64 // Damage given - damage taken
+	Kills           int
+	Deaths          int
+	FirstKills      int
+	FirstDeaths     int
+	TradeKills      int
+	TradedDeaths    int
+	Suicides        int // Team total suicides
+	TeammatesKilled int // Team total teammate kills
+	DeathsBySpike   int // Team total deaths by spike explosion
+	ChainKills      int
+	DoubleKills     int
+	TripleKills     int
+	QuadraKills     int
+	PentaKills      int
+	MultiKills      int  // Sum of double+triple+quadra+penta kills
 	ClutchesPlayed      int
 	ClutchesWon         int
 	ClutchesLoss        int
@@ -185,18 +191,23 @@ type TeamMatchSideStatsRow struct {
 	AvgAPR         float64
 	AvgADR         float64
 	AvgACS         float64
-	DamageDelta    float64
-	TotalKills     int
-	TotalDeaths    int
-	FirstKills     int
-	FirstDeaths    int
-	TradeKills     int
-	TradedDeaths   int
-	Suicides       int // Side-specific total suicides
-	TeamKills      int // Side-specific total teammate kills
-	DeathsBySpike  int // Side-specific total deaths by spike explosion
-	Multikill      int
-	ClutchesPlayed int
+	DamageDelta     float64
+	Kills           int
+	Deaths          int
+	FirstKills      int
+	FirstDeaths     int
+	TradeKills      int
+	TradedDeaths    int
+	Suicides        int // Side-specific total suicides
+	TeammatesKilled int // Side-specific total teammate kills
+	DeathsBySpike   int // Side-specific total deaths by spike explosion
+	ChainKills      int
+	DoubleKills     int
+	TripleKills     int
+	QuadraKills     int
+	PentaKills      int
+	MultiKills      int  // Sum of double+triple+quadra+penta kills
+	ClutchesPlayed  int
 	ClutchesWon        int
 	ClutchesLoss       int
 	ClutchesWR         float64
@@ -270,7 +281,7 @@ type CombatStats struct {
 	DamageGiven      int
 	DamageTaken      int
 	Suicides         int // Self-inflicted deaths (not spike)
-	TeamKills        int // Kills on teammates
+	TeammatesKilled  int // Kills on teammates
 	KilledByTeammate int // Deaths from teammates
 	KilledBySpike    int // Deaths from spike explosion
 }

@@ -162,7 +162,8 @@ func (r *CanonicalReader) getPlayers(ctx context.Context, matchID uuid.UUID) (ma
 func (r *CanonicalReader) getRoundEvents(ctx context.Context, matchID uuid.UUID) ([]aggregate.RoundEventData, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, round_id, match_id, timestamp_ms, event_type,
-		       player_id, victim_id, damage_given, headshot, bodyshot, legshot, weapon
+		       player_id, victim_id, damage_given, headshot, bodyshot, legshot, weapon,
+		       assistants
 		FROM round_events
 		WHERE match_id = $1
 		ORDER BY round_id, timestamp_ms
@@ -176,7 +177,8 @@ func (r *CanonicalReader) getRoundEvents(ctx context.Context, matchID uuid.UUID)
 	for rows.Next() {
 		var e aggregate.RoundEventData
 		if err := rows.Scan(&e.ID, &e.RoundID, &e.MatchID, &e.TimestampMS, &e.EventType,
-			&e.PlayerID, &e.VictimID, &e.DamageGiven, &e.Headshot, &e.Bodyshot, &e.Legshot, &e.Weapon); err != nil {
+			&e.PlayerID, &e.VictimID, &e.DamageGiven, &e.Headshot, &e.Bodyshot, &e.Legshot, &e.Weapon,
+			&e.Assistants); err != nil {
 			return nil, err
 		}
 		events = append(events, e)
