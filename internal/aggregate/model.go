@@ -121,7 +121,7 @@ type MatchPlayerStatsRow struct {
 	ImpactScore     *float64
 	MatchesPlayed   int // Always 1 for per-match stats
 	RoundsPlayed    int
-	WinRate         *float64 // 0 or 100 (match win/loss)
+	RoundsWinRatePercent *float64 // Percentage of rounds won in the match
 	IsOvertime      bool     // true if either team has >13 rounds
 	CreatedAt       time.Time
 }

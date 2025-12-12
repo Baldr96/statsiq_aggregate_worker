@@ -29,6 +29,14 @@ func BuildMatchPlayerStats(
 		clutchesByPlayer[c.ClutcherID] = append(clutchesByPlayer[c.ClutcherID], c)
 	}
 
+	// Build player -> team mapping for rounds won calculation
+	playerTeamMap := make(map[uuid.UUID]uuid.UUID)
+	for _, mp := range data.MatchPlayers {
+		if mp.TeamID != nil {
+			playerTeamMap[mp.PlayerID] = *mp.TeamID
+		}
+	}
+
 	var rows []MatchPlayerStatsRow
 
 	for playerID, roundStats := range statsByPlayer {
@@ -100,8 +108,25 @@ func BuildMatchPlayerStats(
 			kast = float64(kastRounds) / float64(roundsPlayed) * 100
 		}
 
-		if totalKills > 0 {
-			hsPercent = float64(totalHeadshotKills) / float64(totalKills) * 100
+		// Calculate headshot percent based on hits (aligned with round_player_stats)
+		totalHits := totalHeadshotHit + totalBodyshotHit + totalLegshotHit
+		if totalHits > 0 {
+			hsPercent = float64(totalHeadshotHit) / float64(totalHits) * 100
+		}
+
+		// Calculate rounds won by player's team
+		var roundsWinRatePercent float64
+		playerTeamID, hasTeam := playerTeamMap[playerID]
+		if hasTeam {
+			roundsWon := 0
+			for _, round := range data.Rounds {
+				if round.WinnerTeamID != nil && *round.WinnerTeamID == playerTeamID {
+					roundsWon++
+				}
+			}
+			if roundsPlayed > 0 {
+				roundsWinRatePercent = float64(roundsWon) / float64(roundsPlayed) * 100
+			}
 		}
 
 		// Clutch stats by type
@@ -194,11 +219,11 @@ func BuildMatchPlayerStats(
 			LegshotHit:      &totalLegshotHit,
 			DamageGiven:     totalDamageGiven,
 			DamageTaken:     totalDamageTaken,
-			ImpactScore:     new(float64), // Default to 0.0
-			MatchesPlayed:   1,
-			RoundsPlayed:    roundsPlayed,
-			WinRate:         new(float64), // Default to 0.0
-			IsOvertime:      isOvertime,
+			ImpactScore:          new(float64), // Default to 0.0
+			MatchesPlayed:        1,
+			RoundsPlayed:         roundsPlayed,
+			RoundsWinRatePercent: &roundsWinRatePercent,
+			IsOvertime:           isOvertime,
 			CreatedAt:       now,
 		}
 

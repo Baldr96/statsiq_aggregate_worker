@@ -195,7 +195,7 @@ func insertMatchPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Mat
 		"headshot_percent", "headshot_kills", "bodyshot_kills", "legshot_kills",
 		"headshot_hit", "bodyshot_hit", "legshot_hit",
 		"damage_given", "damage_taken", "impact_score",
-		"matches_played", "rounds_played", "win_rate", "is_overtime", "created_at",
+		"matches_played", "rounds_played", "rounds_win_rate_percent", "is_overtime", "created_at",
 	}
 
 	_, err := tx.CopyFrom(
@@ -215,7 +215,7 @@ func insertMatchPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Mat
 				r.HeadshotPercent, r.HeadshotKills, r.BodyshotKills, r.LegshotKills,
 				r.HeadshotHit, r.BodyshotHit, r.LegshotHit,
 				r.DamageGiven, r.DamageTaken, r.ImpactScore,
-				r.MatchesPlayed, r.RoundsPlayed, r.WinRate, r.IsOvertime, r.CreatedAt,
+				r.MatchesPlayed, r.RoundsPlayed, r.RoundsWinRatePercent, r.IsOvertime, r.CreatedAt,
 			}, nil
 		}),
 	)
