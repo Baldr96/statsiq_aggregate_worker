@@ -99,6 +99,8 @@ internal/
 | `DB_URL` | Oui | - | URL de connexion PostgreSQL |
 | `REDIS_URL` | Oui | - | URL de connexion Redis |
 | `REDIS_QUEUE` | Non | `aggregate_matches` | Nom de la queue Redis |
+| `WORKER_COUNT` | Non | `4` | Nombre de workers concurrents |
+| `JOB_BUFFER_SIZE` | Non | `100` | Taille du buffer de jobs |
 
 ### Exemple
 
@@ -126,6 +128,66 @@ Le worker est idempotent grâce à :
 2. **Purge préalable** des données agrégées existantes avant insertion
 3. **Transaction atomique** : toutes les insertions dans une seule transaction
 
+## Traitement concurrent
+
+Le worker supporte le traitement concurrent via un pool de workers.
+
+### Architecture
+
+```
+┌─────────────────┐
+│   Redis Queue   │
+│ (BRPOP loop)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Job Channel   │
+│ (buffered: 100) │
+└────────┬────────┘
+         │
+    ┌────┴────┬────────┬────────┐
+    ▼         ▼        ▼        ▼
+┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐
+│Worker0│ │Worker1│ │Worker2│ │Worker3│
+└───────┘ └───────┘ └───────┘ └───────┘
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKER_COUNT` | `4` | Nombre de workers parallèles |
+| `JOB_BUFFER_SIZE` | `100` | Taille du buffer du channel |
+
+### Comportement
+
+- Si `WORKER_COUNT > 1` : Utilise `ConsumeConcurrent` avec un pool de workers
+- Si `WORKER_COUNT = 1` : Utilise `Consume` single-threaded (comportement original)
+
+### Performance
+
+Traitement de 100 matches :
+
+| Configuration | Durée |
+|---------------|-------|
+| 1 worker | ~2-3s |
+| 4 workers | ~1s |
+
+### Logs
+
+```json
+{"level":"info","message":"starting concurrent consumption with 4 workers"}
+{"level":"info","message":"started 4 concurrent workers for queue aggregate_matches"}
+{"level":"info","message":"aggregate job completed for match xxx in 10.5ms"}
+```
+
+### Gestion des erreurs
+
+Chaque worker gère ses propres retries :
+- Jobs échoués → `aggregate_matches:retry`
+- Après 3 tentatives → `aggregate_matches:dlq` (dead letter queue)
+- Compteur de retry basé sur le hash SHA256 du payload
 
 ## Algorithmes de détection
 

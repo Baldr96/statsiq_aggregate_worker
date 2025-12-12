@@ -49,12 +49,22 @@ func main() {
 	proc := processor.NewAggregateProcessor(ctx, canonicalReader, aggregateWriter)
 	q := queue.NewRedisQueue(redisClient)
 
-	logger.Infof("aggregate worker started, consuming from queue: %s", cfg.RedisQueue)
-
-	if err := q.Consume(ctx, cfg.RedisQueue, func(payload []byte) error {
+	handler := func(payload []byte) error {
 		return proc.Handle(payload)
-	}); err != nil && ctx.Err() == nil {
-		logger.Errorf("queue consumption ended: %v", err)
-		os.Exit(1)
+	}
+
+	// Use concurrent processing if worker count > 1
+	if cfg.WorkerCount > 1 {
+		logger.Infof("starting concurrent consumption with %d workers", cfg.WorkerCount)
+		if err := q.ConsumeConcurrent(ctx, cfg.RedisQueue, cfg.WorkerCount, cfg.JobBufferSize, handler); err != nil && ctx.Err() == nil {
+			logger.Errorf("queue consumption ended: %v", err)
+			os.Exit(1)
+		}
+	} else {
+		logger.Infof("starting single-threaded consumption")
+		if err := q.Consume(ctx, cfg.RedisQueue, handler); err != nil && ctx.Err() == nil {
+			logger.Errorf("queue consumption ended: %v", err)
+			os.Exit(1)
+		}
 	}
 }
