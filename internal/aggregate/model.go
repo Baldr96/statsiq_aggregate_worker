@@ -6,7 +6,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// Global Team IDs for solo queue matches.
+// Note: Team IDs are now dynamic. These constants are kept ONLY for backward
+// compatibility with functions that haven't been fully migrated yet.
+// DO NOT use these for iterating over teams - use GetTeamIDs() instead.
 var (
 	RedTeamID  = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	BlueTeamID = uuid.MustParse("00000000-0000-0000-0000-000000000002")
@@ -38,6 +40,7 @@ type RoundPlayerStatsRow struct {
 	ID               uuid.UUID
 	RoundID          uuid.UUID
 	PlayerID         uuid.UUID
+	MatchDate        time.Time // Denormalized for TimescaleDB hypertable partitioning
 	LoadoutID        *uuid.UUID
 	Agent            string
 	Rating           float64
@@ -76,6 +79,7 @@ type MatchPlayerStatsRow struct {
 	ID              uuid.UUID
 	PlayerID        uuid.UUID
 	MatchID         *uuid.UUID
+	MatchDate       time.Time // Denormalized for TimescaleDB hypertable partitioning
 	Rating          *float64
 	ACS             *float64 // Average Combat Score
 	KD              *float64 // Kill/Death ratio
@@ -122,8 +126,15 @@ type MatchPlayerStatsRow struct {
 	MatchesPlayed   int // Always 1 for per-match stats
 	RoundsPlayed    int
 	RoundsWinRatePercent *float64 // Percentage of rounds won in the match
-	IsOvertime      bool     // true if either team has >13 rounds
-	CreatedAt       time.Time
+	IsOvertime           bool     // true if either team has >13 rounds
+	// Phase 5 columns for TimescaleDB CA support
+	RoundsWon          int  // Rounds won by player's team
+	FirstKillsTraded   int  // First kills where player was subsequently traded (enemy avenged)
+	FirstDeathsTraded  int  // First deaths that were traded (teammate avenged)
+	MVP                int  // 1 if MVP of the match (highest ACS on winning team), 0 otherwise
+	FlawlessRounds     int  // Rounds where player's team had 0 deaths
+	MatchWon           bool // Denormalized for CAs - true if player's team won the match
+	CreatedAt          time.Time
 }
 
 // TeamMatchStatsRow mirrors team_match_stats_agregate table (lines 498-534).
@@ -131,7 +142,8 @@ type TeamMatchStatsRow struct {
 	ID                  uuid.UUID
 	TeamID              uuid.UUID
 	MatchID             uuid.UUID
-	MatchType           *string // "Officials", "Scrim", etc.
+	MatchDate           time.Time // Denormalized for TimescaleDB hypertable partitioning
+	MatchType           *string   // "Officials", "Scrim", etc.
 	RoundsPlayed        int
 	RoundsWon           int
 	RoundsLost          int
@@ -178,6 +190,7 @@ type TeamMatchSideStatsRow struct {
 	ID             uuid.UUID
 	TeamID         uuid.UUID
 	MatchID        uuid.UUID
+	MatchDate      time.Time // Denormalized for TimescaleDB hypertable partitioning
 	MatchType      *string
 	TeamSide       string // "Attack" or "Defense"
 	SideOutcome    string // "Win", "Lose", or "Tie"
@@ -217,14 +230,138 @@ type TeamMatchSideStatsRow struct {
 	CreatedAt          time.Time
 }
 
+// RoundTeamStatsRow mirrors round_team_stats_agregate table.
+// Pre-computes team-level aggregates per round for composition CAs.
+type RoundTeamStatsRow struct {
+	ID               uuid.UUID
+	RoundID          uuid.UUID
+	TeamID           uuid.UUID
+	MatchDate        time.Time // Denormalized for TimescaleDB hypertable partitioning
+	TeamTag          string
+
+	// Economy
+	CreditsSpent     int
+	CreditsRemaining int
+	BuyType          string // DRY, ECO, SEMI, FULL, Pistol
+
+	// Combat stats
+	Kills       int
+	Deaths      int
+	Assists     int
+	DamageGiven int
+	DamageTaken int
+
+	// Entry/trade stats
+	FirstKills   int
+	FirstDeaths  int
+	TradeKills   int
+	TradedDeaths int
+
+	// Classification
+	Side      string // Attack, Defense
+	Situation string // Pre-Plant, Post-Plant, Def Holds, Def Retakes
+
+	// Round outcome
+	RoundWon   bool
+	IsOvertime bool
+	CreatedAt  time.Time
+}
+
+// MatchPlayerDuelsRow mirrors match_player_duels_agregate table.
+// Tracks head-to-head statistics between each pair of players in a match.
+type MatchPlayerDuelsRow struct {
+	ID           uuid.UUID
+	MatchID      uuid.UUID
+	PlayerID     uuid.UUID
+	OpponentID   uuid.UUID
+	Kills        int
+	Deaths       int
+	FirstKills   int
+	FirstDeaths  int
+	DamageGiven  int
+	DamageTaken  int
+	HeadshotKills int
+	CreatedAt    time.Time
+}
+
+// MatchPlayerWeaponStatsRow mirrors match_player_weapon_stats_agregate table.
+// Tracks weapon-specific statistics for each player in a match.
+type MatchPlayerWeaponStatsRow struct {
+	ID             uuid.UUID
+	MatchID        uuid.UUID
+	MatchDate      time.Time // Denormalized for TimescaleDB hypertable partitioning
+	PlayerID       uuid.UUID
+	WeaponID       *uuid.UUID
+	WeaponName     string
+	WeaponCategory *string
+	Kills          int
+	Deaths         int
+	DamageGiven    int
+	DamageTaken    int
+	FirstKills     int
+	HeadshotKills  int
+	BodyshotKills  int
+	LegshotKills   int
+	CreatedAt      time.Time
+}
+
+// PlayerClutchStatsRow mirrors player_clutch_stats_agregate table.
+// Denormalized clutch stats per player per type for CA support (replaces LATERAL unpivot).
+type PlayerClutchStatsRow struct {
+	ID         uuid.UUID
+	MatchID    uuid.UUID
+	MatchDate  time.Time // Denormalized for TimescaleDB hypertable partitioning
+	PlayerID   uuid.UUID
+	ClutchType int16 // 1-5 (1vX)
+	Played     int
+	Won        int
+	CreatedAt  time.Time
+}
+
+// CompositionWeaponStatsRow mirrors composition_weapon_stats_agregate table.
+// Denormalized weapon stats per composition for CA support (replaces round_events JOIN).
+type CompositionWeaponStatsRow struct {
+	ID             uuid.UUID
+	MatchID        uuid.UUID
+	MatchDate      time.Time // Denormalized for TimescaleDB hypertable partitioning
+	CompositionHash string
+	WeaponCategory string
+	TotalKills     int
+	HeadshotKills  int
+	BodyshotKills  int
+	LegshotKills   int
+	TotalDamage    int
+	CreatedAt      time.Time
+}
+
+// CompositionClutchStatsRow mirrors composition_clutch_stats_agregate table.
+// Denormalized clutch stats per composition for CA support (replaces clutches JOIN).
+type CompositionClutchStatsRow struct {
+	ID              uuid.UUID
+	MatchID         uuid.UUID
+	MatchDate       time.Time // Denormalized for TimescaleDB hypertable partitioning
+	CompositionHash string
+	ClutchType      int16 // 1-5 (1vX)
+	Played          int
+	Won             int
+	CreatedAt       time.Time
+}
+
 // AggregateSet groups all computed aggregate data for a match.
 type AggregateSet struct {
-	MatchID            uuid.UUID
-	Clutches           []ClutchRow
-	RoundPlayerStats   []RoundPlayerStatsRow
-	MatchPlayerStats   []MatchPlayerStatsRow
-	TeamMatchStats     []TeamMatchStatsRow
-	TeamMatchSideStats []TeamMatchSideStatsRow
+	MatchID                   uuid.UUID
+	Clutches                  []ClutchRow
+	RoundPlayerStats          []RoundPlayerStatsRow
+	RoundTeamStats            []RoundTeamStatsRow
+	MatchPlayerStats          []MatchPlayerStatsRow
+	TeamMatchStats            []TeamMatchStatsRow
+	TeamMatchSideStats        []TeamMatchSideStatsRow
+	MatchPlayerDuels          []MatchPlayerDuelsRow
+	MatchPlayerWeaponStats    []MatchPlayerWeaponStatsRow
+	// Denormalized tables for CA support (replaces PostgreSQL MVs with LATERAL/complex JOINs)
+	PlayerClutchStats         []PlayerClutchStatsRow
+	CompositionWeaponStats    []CompositionWeaponStatsRow
+	CompositionClutchStats    []CompositionClutchStatsRow
 }
 
 // TradeResult contains trade detection results for a player in a round.
@@ -308,13 +445,13 @@ func GetTeamIDByTag(tag string) *uuid.UUID {
 	}
 }
 
-// DetermineSide returns the side ("Attack" or "Defense") for a team in a given round.
+// DetermineSideByTag returns the side ("Attack" or "Defense") for a team in a given round.
+// teamTag must be "Red", "RED", "Blue", or "BLUE".
 // - Rounds 0-11 (1st half): RED=Attack, BLUE=Defense
 // - Rounds 12-23 (2nd half): RED=Defense, BLUE=Attack
 // - Rounds 24+ (Overtime): Alternates every 2 rounds per team
-//   OT1 (24-25): RED starts Attack, OT2 (26-27): RED starts Defense, etc.
-func DetermineSide(roundNumber int16, teamID uuid.UUID) string {
-	isRedTeam := teamID == RedTeamID
+func DetermineSideByTag(roundNumber int16, teamTag string) string {
+	isRedTeam := teamTag == "Red" || teamTag == "RED"
 
 	// First half (rounds 0-11)
 	if roundNumber < 12 {
@@ -367,6 +504,17 @@ func DetermineSide(roundNumber int16, teamID uuid.UUID) string {
 		return "Attack"
 	}
 	return "Defense"
+}
+
+// DetermineSide returns the side ("Attack" or "Defense") for a team in a given round.
+// Uses the teamTagMap to look up the team tag for the given teamID.
+// Falls back to "Attack" if team not found in map.
+func DetermineSide(roundNumber int16, teamID uuid.UUID, teamTagMap map[uuid.UUID]string) string {
+	teamTag, ok := teamTagMap[teamID]
+	if !ok {
+		return "Attack" // fallback
+	}
+	return DetermineSideByTag(roundNumber, teamTag)
 }
 
 // OtherTeam returns the opposing team ID.

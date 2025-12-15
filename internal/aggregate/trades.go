@@ -119,3 +119,39 @@ func BuildTeamPlayersMap(matchPlayers []MatchPlayerData) map[uuid.UUID][]uuid.UU
 	}
 	return teamPlayers
 }
+
+// BuildTeamTagMap creates a mapping from team ID to team tag ("Red" or "Blue").
+// This is used to determine the side (Attack/Defense) for a team.
+func BuildTeamTagMap(matchPlayers []MatchPlayerData) map[uuid.UUID]string {
+	teamTag := make(map[uuid.UUID]string)
+	for _, mp := range matchPlayers {
+		if mp.TeamID != nil && mp.TeamTag != "" {
+			teamTag[*mp.TeamID] = mp.TeamTag
+		}
+	}
+	return teamTag
+}
+
+// GetTeamIDs extracts the unique team IDs from the match players (typically 2 teams).
+func GetTeamIDs(matchPlayers []MatchPlayerData) []uuid.UUID {
+	seen := make(map[uuid.UUID]bool)
+	var teamIDs []uuid.UUID
+	for _, mp := range matchPlayers {
+		if mp.TeamID != nil && !seen[*mp.TeamID] {
+			seen[*mp.TeamID] = true
+			teamIDs = append(teamIDs, *mp.TeamID)
+		}
+	}
+	return teamIDs
+}
+
+// GetOtherTeamID returns the opposing team ID from the teamPlayers map.
+// For a standard match with 2 teams, returns the team that is not the given one.
+func GetOtherTeamID(teamID uuid.UUID, teamPlayers map[uuid.UUID][]uuid.UUID) uuid.UUID {
+	for otherTeamID := range teamPlayers {
+		if otherTeamID != teamID {
+			return otherTeamID
+		}
+	}
+	return uuid.Nil
+}

@@ -14,6 +14,8 @@ func BuildTeamMatchSideStats(
 	clutches []ClutchResult,
 	multiKillResults map[uuid.UUID]map[uuid.UUID]*MultiKillResult,
 	playerTeam map[uuid.UUID]uuid.UUID,
+	teamIDs []uuid.UUID,
+	teamTagMap map[uuid.UUID]string,
 	now time.Time,
 ) []TeamMatchSideStatsRow {
 	// Calculate match-level overtime flag
@@ -27,10 +29,10 @@ func BuildTeamMatchSideStats(
 
 	var rows []TeamMatchSideStatsRow
 
-	for _, teamID := range []uuid.UUID{RedTeamID, BlueTeamID} {
+	for _, teamID := range teamIDs {
 		for _, side := range []string{"Attack", "Defense"} {
 			// Get round IDs for this team and side
-			roundIDs := getRoundIDsForTeamSide(rounds, teamID, side)
+			roundIDs := getRoundIDsForTeamSide(rounds, teamID, teamTagMap, side)
 
 			if len(roundIDs) == 0 {
 				continue
@@ -210,6 +212,7 @@ func BuildTeamMatchSideStats(
 				ID:                 uuid.New(),
 				TeamID:             teamID,
 				MatchID:            data.MatchID,
+				MatchDate:          data.MatchDate,
 				MatchType:          data.MatchType,
 				TeamSide:           side,
 				SideOutcome:        sideOutcome,
@@ -255,11 +258,11 @@ func BuildTeamMatchSideStats(
 }
 
 // getRoundIDsForTeamSide returns round IDs where the team played the specified side.
-func getRoundIDsForTeamSide(rounds []RoundData, teamID uuid.UUID, side string) []uuid.UUID {
+func getRoundIDsForTeamSide(rounds []RoundData, teamID uuid.UUID, teamTagMap map[uuid.UUID]string, side string) []uuid.UUID {
 	var roundIDs []uuid.UUID
 
 	for _, round := range rounds {
-		teamSide := DetermineSide(round.RoundNumber, teamID)
+		teamSide := DetermineSide(round.RoundNumber, teamID, teamTagMap)
 		if teamSide == side {
 			roundIDs = append(roundIDs, round.ID)
 		}

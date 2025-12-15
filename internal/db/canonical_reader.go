@@ -28,12 +28,12 @@ func (r *CanonicalReader) GetMatchData(ctx context.Context, matchID uuid.UUID) (
 		Players: make(map[uuid.UUID]aggregate.PlayerData),
 	}
 
-	// Get match info
+	// Get match info (including date for TimescaleDB hypertable partitioning)
 	err := r.pool.QueryRow(ctx, `
-		SELECT match_id, match_type, team_red_score, team_blue_score
+		SELECT match_id, date, match_type, team_red_score, team_blue_score
 		FROM matches
 		WHERE id = $1
-	`, matchID).Scan(&data.MatchKey, &data.MatchType, &data.TeamRedScore, &data.TeamBlueScore)
+	`, matchID).Scan(&data.MatchKey, &data.MatchDate, &data.MatchType, &data.TeamRedScore, &data.TeamBlueScore)
 	if err != nil {
 		return nil, fmt.Errorf("get match info: %w", err)
 	}
@@ -79,6 +79,13 @@ func (r *CanonicalReader) GetMatchData(ctx context.Context, matchID uuid.UUID) (
 		return nil, fmt.Errorf("get round player loadouts: %w", err)
 	}
 	data.RoundPlayerLoadouts = loadouts
+
+	// Get compositions for denormalized CA stats
+	compositions, err := r.getCompositions(ctx, matchID)
+	if err != nil {
+		return nil, fmt.Errorf("get compositions: %w", err)
+	}
+	data.Compositions = compositions
 
 	return data, nil
 }
@@ -158,15 +165,17 @@ func (r *CanonicalReader) getPlayers(ctx context.Context, matchID uuid.UUID) (ma
 	return players, rows.Err()
 }
 
-// getRoundEvents retrieves all round events (kills and damage).
+// getRoundEvents retrieves all round events (kills and damage) with weapon information.
 func (r *CanonicalReader) getRoundEvents(ctx context.Context, matchID uuid.UUID) ([]aggregate.RoundEventData, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, round_id, match_id, timestamp_ms, event_type,
-		       player_id, victim_id, damage_given, headshot, bodyshot, legshot, weapon,
-		       assistants
-		FROM round_events
-		WHERE match_id = $1
-		ORDER BY round_id, timestamp_ms
+		SELECT re.id, re.round_id, re.match_id, re.timestamp_ms, re.event_type,
+		       re.player_id, re.victim_id, re.damage_given, re.headshot, re.bodyshot, re.legshot,
+		       re.weapon, re.weapon_id, aw.category,
+		       re.assistants
+		FROM round_events re
+		LEFT JOIN asset_weapons aw ON re.weapon_id = aw.id
+		WHERE re.match_id = $1
+		ORDER BY re.round_id, re.timestamp_ms
 	`, matchID)
 	if err != nil {
 		return nil, err
@@ -177,7 +186,8 @@ func (r *CanonicalReader) getRoundEvents(ctx context.Context, matchID uuid.UUID)
 	for rows.Next() {
 		var e aggregate.RoundEventData
 		if err := rows.Scan(&e.ID, &e.RoundID, &e.MatchID, &e.TimestampMS, &e.EventType,
-			&e.PlayerID, &e.VictimID, &e.DamageGiven, &e.Headshot, &e.Bodyshot, &e.Legshot, &e.Weapon,
+			&e.PlayerID, &e.VictimID, &e.DamageGiven, &e.Headshot, &e.Bodyshot, &e.Legshot,
+			&e.Weapon, &e.WeaponID, &e.WeaponCategory,
 			&e.Assistants); err != nil {
 			return nil, err
 		}
@@ -245,6 +255,29 @@ func (r *CanonicalReader) MatchExists(ctx context.Context, matchID uuid.UUID) (b
 		return false, err
 	}
 	return exists, nil
+}
+
+// getCompositions retrieves composition data for a match.
+func (r *CanonicalReader) getCompositions(ctx context.Context, matchID uuid.UUID) ([]aggregate.CompositionData, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT match_id, team_tag, agent_list_hash
+		FROM compositions
+		WHERE match_id = $1
+	`, matchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var compositions []aggregate.CompositionData
+	for rows.Next() {
+		var c aggregate.CompositionData
+		if err := rows.Scan(&c.MatchID, &c.TeamTag, &c.AgentListHash); err != nil {
+			return nil, err
+		}
+		compositions = append(compositions, c)
+	}
+	return compositions, rows.Err()
 }
 
 // ErrNoRows is exposed for error checking.

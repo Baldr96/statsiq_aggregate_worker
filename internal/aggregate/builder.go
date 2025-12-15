@@ -11,6 +11,7 @@ import (
 type MatchData struct {
 	MatchID             uuid.UUID
 	MatchKey            string
+	MatchDate           time.Time // Date of the match for TimescaleDB hypertable partitioning
 	MatchType           *string
 	TeamRedScore        int16
 	TeamBlueScore       int16
@@ -20,6 +21,7 @@ type MatchData struct {
 	RoundEvents         []RoundEventData
 	RoundPlayerStates   []RoundPlayerStateData
 	RoundPlayerLoadouts []RoundPlayerLoadoutData
+	Compositions        []CompositionData // Compositions for CA denormalized stats
 }
 
 // RoundData holds round information.
@@ -53,19 +55,21 @@ type PlayerData struct {
 
 // RoundEventData holds round event information (kills and damage).
 type RoundEventData struct {
-	ID          uuid.UUID
-	RoundID     uuid.UUID
-	MatchID     uuid.UUID
-	TimestampMS int
-	EventType   string
-	PlayerID    uuid.UUID
-	VictimID    *uuid.UUID
-	DamageGiven *int
-	Headshot    *int
-	Bodyshot    *int
-	Legshot     *int
-	Weapon      *string     // "Spike" for bomb deaths, ability name, or nil for weapons
-	Assistants  []uuid.UUID // Player UUIDs who assisted in this kill
+	ID             uuid.UUID
+	RoundID        uuid.UUID
+	MatchID        uuid.UUID
+	TimestampMS    int
+	EventType      string
+	PlayerID       uuid.UUID
+	VictimID       *uuid.UUID
+	DamageGiven    *int
+	Headshot       *int
+	Bodyshot       *int
+	Legshot        *int
+	Weapon         *string     // "Spike" for bomb deaths, ability name, or nil for weapons
+	WeaponID       *uuid.UUID  // Reference to asset_weapons table
+	WeaponCategory *string     // Weapon category (Rifle, SMG, etc.) from asset_weapons
+	Assistants     []uuid.UUID // Player UUIDs who assisted in this kill
 }
 
 // RoundPlayerStateData holds player state per round.
@@ -93,6 +97,8 @@ func BuildAggregates(data *MatchData) (*AggregateSet, error) {
 	// Build helper maps
 	playerTeam := BuildPlayerTeamMap(data.MatchPlayers)
 	teamPlayers := BuildTeamPlayersMap(data.MatchPlayers)
+	teamTagMap := BuildTeamTagMap(data.MatchPlayers)
+	teamIDs := GetTeamIDs(data.MatchPlayers)
 
 	// Step 1: Compute trades (depends only on events)
 	trades := ComputeTrades(data.RoundEvents, playerTeam)
@@ -101,22 +107,37 @@ func BuildAggregates(data *MatchData) (*AggregateSet, error) {
 	entries := ComputeEntries(data.Rounds, data.RoundEvents)
 
 	// Step 3: Compute clutches (depends on events + rounds + players)
-	clutchResults := ComputeClutches(data.Rounds, data.RoundEvents, playerTeam, teamPlayers)
+	clutchResults := ComputeClutches(data.Rounds, data.RoundEvents, playerTeam, teamPlayers, teamTagMap)
 
 	// Step 4: Compute multi-kills (depends only on events + playerTeam)
 	multiKills := ComputeMultiKills(data.RoundEvents, playerTeam)
 
-	// Step 5: Build round player stats (uses trades, entries, clutches, playerTeam for suicide/teamkill)
+	// Step 5: Compute duels (head-to-head stats between players)
+	duels := ComputeDuels(data.RoundEvents, entries, playerTeam)
+
+	// Step 6: Compute weapon stats (per-weapon stats for each player)
+	weaponStats := ComputeWeaponStats(data.RoundEvents, entries, playerTeam)
+
+	// Step 7: Build round player stats (uses trades, entries, clutches, playerTeam for suicide/teamkill)
 	roundPlayerStats := BuildRoundPlayerStats(data, trades, entries, clutchResults, playerTeam, now)
 
-	// Step 6: Build match player stats (aggregates round stats + clutches + multi-kills)
-	matchPlayerStats := BuildMatchPlayerStats(data, roundPlayerStats, clutchResults, multiKills, now)
+	// Step 7.5: Build round team stats (aggregates round player stats per team for composition CAs)
+	roundTeamStats := BuildRoundTeamStats(data, data.Rounds, roundPlayerStats, playerTeam, teamIDs, teamTagMap, now)
 
-	// Step 7: Build team match stats (aggregates round stats by team)
-	teamMatchStats := BuildTeamMatchStats(data, data.Rounds, roundPlayerStats, clutchResults, multiKills, playerTeam, now)
+	// Step 8: Build match player stats (aggregates round stats + clutches + multi-kills + Phase 5 columns)
+	matchPlayerStats := BuildMatchPlayerStats(data, roundPlayerStats, clutchResults, multiKills, entries, trades, playerTeam, now)
 
-	// Step 8: Build team side stats (filters by Attack/Defense)
-	teamMatchSideStats := BuildTeamMatchSideStats(data, data.Rounds, roundPlayerStats, clutchResults, multiKills, playerTeam, now)
+	// Step 9: Build team match stats (aggregates round stats by team)
+	teamMatchStats := BuildTeamMatchStats(data, data.Rounds, roundPlayerStats, clutchResults, multiKills, playerTeam, teamIDs, teamTagMap, now)
+
+	// Step 10: Build team side stats (filters by Attack/Defense)
+	teamMatchSideStats := BuildTeamMatchSideStats(data, data.Rounds, roundPlayerStats, clutchResults, multiKills, playerTeam, teamIDs, teamTagMap, now)
+
+	// Step 11: Build duels rows for database
+	matchPlayerDuels := BuildMatchPlayerDuels(data.MatchID, duels, now)
+
+	// Step 12: Build weapon stats rows for database
+	matchPlayerWeaponStats := BuildMatchPlayerWeaponStats(data.MatchID, data.MatchDate, weaponStats, now)
 
 	// Build clutch rows for database
 	clutchRows := buildClutchRows(clutchResults, playerTeam, teamPlayers, now)
@@ -124,13 +145,24 @@ func BuildAggregates(data *MatchData) (*AggregateSet, error) {
 	// Update round player stats with clutch IDs
 	roundPlayerStats = linkClutchesToRoundStats(roundPlayerStats, clutchRows)
 
+	// Step 13: Build denormalized stats for CA support (replaces PostgreSQL MVs)
+	playerClutchStats := BuildPlayerClutchStats(data.MatchID, data.MatchDate, matchPlayerStats, now)
+	compositionWeaponStats := BuildCompositionWeaponStats(data.MatchID, data.MatchDate, data.RoundEvents, data.Compositions, playerTeam, now)
+	compositionClutchStats := BuildCompositionClutchStats(data.MatchID, data.MatchDate, clutchResults, data.Compositions, playerTeam, now)
+
 	return &AggregateSet{
-		MatchID:            data.MatchID,
-		Clutches:           clutchRows,
-		RoundPlayerStats:   roundPlayerStats,
-		MatchPlayerStats:   matchPlayerStats,
-		TeamMatchStats:     teamMatchStats,
-		TeamMatchSideStats: teamMatchSideStats,
+		MatchID:                   data.MatchID,
+		Clutches:                  clutchRows,
+		RoundPlayerStats:          roundPlayerStats,
+		RoundTeamStats:            roundTeamStats,
+		MatchPlayerStats:          matchPlayerStats,
+		TeamMatchStats:            teamMatchStats,
+		TeamMatchSideStats:        teamMatchSideStats,
+		MatchPlayerDuels:          matchPlayerDuels,
+		MatchPlayerWeaponStats:    matchPlayerWeaponStats,
+		PlayerClutchStats:         playerClutchStats,
+		CompositionWeaponStats:    compositionWeaponStats,
+		CompositionClutchStats:    compositionClutchStats,
 	}, nil
 }
 

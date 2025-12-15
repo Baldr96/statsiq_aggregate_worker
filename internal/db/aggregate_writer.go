@@ -33,10 +33,12 @@ func (w *AggregateWriter) WriteAll(ctx context.Context, agg *aggregate.Aggregate
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Advisory lock on match ID
-	lockKey := advisoryLockKey(agg.MatchID)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
-		return fmt.Errorf("acquire advisory lock: %w", err)
+	// 1. Global advisory lock shared with canonical_worker to prevent deadlocks
+	// between canonical writes and aggregate writes on related tables (rounds ↔ round_player_stats).
+	// Lock key: shared constant "statsiq_write" = 0x7374617469717721
+	const globalWriteLockKey int64 = 0x7374617469717721
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, globalWriteLockKey); err != nil {
+		return fmt.Errorf("acquire global write lock: %w", err)
 	}
 
 	// 2. Purge existing data (reverse FK order)
@@ -53,6 +55,10 @@ func (w *AggregateWriter) WriteAll(ctx context.Context, agg *aggregate.Aggregate
 		return fmt.Errorf("insert round player stats: %w", err)
 	}
 
+	if err := insertRoundTeamStats(ctx, tx, agg.RoundTeamStats); err != nil {
+		return fmt.Errorf("insert round team stats: %w", err)
+	}
+
 	if err := insertMatchPlayerStats(ctx, tx, agg.MatchPlayerStats); err != nil {
 		return fmt.Errorf("insert match player stats: %w", err)
 	}
@@ -63,6 +69,27 @@ func (w *AggregateWriter) WriteAll(ctx context.Context, agg *aggregate.Aggregate
 
 	if err := insertTeamMatchSideStats(ctx, tx, agg.TeamMatchSideStats); err != nil {
 		return fmt.Errorf("insert team match side stats: %w", err)
+	}
+
+	if err := insertMatchPlayerDuels(ctx, tx, agg.MatchPlayerDuels); err != nil {
+		return fmt.Errorf("insert match player duels: %w", err)
+	}
+
+	if err := insertMatchPlayerWeaponStats(ctx, tx, agg.MatchPlayerWeaponStats); err != nil {
+		return fmt.Errorf("insert match player weapon stats: %w", err)
+	}
+
+	// Insert denormalized stats for CA support
+	if err := insertPlayerClutchStats(ctx, tx, agg.PlayerClutchStats); err != nil {
+		return fmt.Errorf("insert player clutch stats: %w", err)
+	}
+
+	if err := insertCompositionWeaponStats(ctx, tx, agg.CompositionWeaponStats); err != nil {
+		return fmt.Errorf("insert composition weapon stats: %w", err)
+	}
+
+	if err := insertCompositionClutchStats(ctx, tx, agg.CompositionClutchStats); err != nil {
+		return fmt.Errorf("insert composition clutch stats: %w", err)
 	}
 
 	return tx.Commit(ctx)
@@ -78,22 +105,56 @@ func advisoryLockKey(id uuid.UUID) int64 {
 // purgeAggregates deletes existing aggregate data for a match.
 // Order: reverse of FK dependencies.
 func purgeAggregates(ctx context.Context, tx pgx.Tx, matchID uuid.UUID) error {
-	// 1. team_match_side_stats_agregate
+	// 1. composition_clutch_stats_agregate (denormalized for CA)
+	if _, err := tx.Exec(ctx, `DELETE FROM composition_clutch_stats_agregate WHERE match_id = $1`, matchID); err != nil {
+		return fmt.Errorf("purge composition_clutch_stats_agregate: %w", err)
+	}
+
+	// 2. composition_weapon_stats_agregate (denormalized for CA)
+	if _, err := tx.Exec(ctx, `DELETE FROM composition_weapon_stats_agregate WHERE match_id = $1`, matchID); err != nil {
+		return fmt.Errorf("purge composition_weapon_stats_agregate: %w", err)
+	}
+
+	// 3. player_clutch_stats_agregate (denormalized for CA)
+	if _, err := tx.Exec(ctx, `DELETE FROM player_clutch_stats_agregate WHERE match_id = $1`, matchID); err != nil {
+		return fmt.Errorf("purge player_clutch_stats_agregate: %w", err)
+	}
+
+	// 4. match_player_weapon_stats_agregate
+	if _, err := tx.Exec(ctx, `DELETE FROM match_player_weapon_stats_agregate WHERE match_id = $1`, matchID); err != nil {
+		return fmt.Errorf("purge match_player_weapon_stats_agregate: %w", err)
+	}
+
+	// 5. match_player_duels_agregate
+	if _, err := tx.Exec(ctx, `DELETE FROM match_player_duels_agregate WHERE match_id = $1`, matchID); err != nil {
+		return fmt.Errorf("purge match_player_duels_agregate: %w", err)
+	}
+
+	// 3. team_match_side_stats_agregate
 	if _, err := tx.Exec(ctx, `DELETE FROM team_match_side_stats_agregate WHERE match_id = $1`, matchID); err != nil {
 		return fmt.Errorf("purge team_match_side_stats_agregate: %w", err)
 	}
 
-	// 2. team_match_stats_agregate
+	// 4. team_match_stats_agregate
 	if _, err := tx.Exec(ctx, `DELETE FROM team_match_stats_agregate WHERE match_id = $1`, matchID); err != nil {
 		return fmt.Errorf("purge team_match_stats_agregate: %w", err)
 	}
 
-	// 3. match_player_stats_agregate
+	// 5. match_player_stats_agregate
 	if _, err := tx.Exec(ctx, `DELETE FROM match_player_stats_agregate WHERE match_id = $1`, matchID); err != nil {
 		return fmt.Errorf("purge match_player_stats_agregate: %w", err)
 	}
 
-	// 4. round_player_stats_agregate (via JOIN rounds)
+	// 6. round_team_stats_agregate (via JOIN rounds)
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM round_team_stats_agregate rts
+		USING rounds r
+		WHERE rts.round_id = r.id AND r.match_id = $1
+	`, matchID); err != nil {
+		return fmt.Errorf("purge round_team_stats_agregate: %w", err)
+	}
+
+	// 7. round_player_stats_agregate (via JOIN rounds)
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM round_player_stats_agregate rps
 		USING rounds r
@@ -102,7 +163,7 @@ func purgeAggregates(ctx context.Context, tx pgx.Tx, matchID uuid.UUID) error {
 		return fmt.Errorf("purge round_player_stats_agregate: %w", err)
 	}
 
-	// 5. clutches (via JOIN rounds)
+	// 8. clutches (via JOIN rounds)
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM clutches c
 		USING rounds r
@@ -147,7 +208,7 @@ func insertRoundPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Rou
 	}
 
 	columns := []string{
-		"id", "round_id", "player_id", "loadout_id", "agent", "rating", "cs",
+		"id", "round_id", "player_id", "match_date", "loadout_id", "agent", "rating", "cs",
 		"kills", "deaths", "assists", "headshot_percent",
 		"headshot_kills", "bodyshot_kills", "legshot_kills",
 		"headshot_hit", "bodyshot_hit", "legshot_hit",
@@ -164,7 +225,7 @@ func insertRoundPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Rou
 		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
 			r := rows[i]
 			return []any{
-				r.ID, r.RoundID, r.PlayerID, r.LoadoutID, r.Agent, r.Rating, r.CS,
+				r.ID, r.RoundID, r.PlayerID, r.MatchDate, r.LoadoutID, r.Agent, r.Rating, r.CS,
 				r.Kills, r.Deaths, r.Assists, r.HeadshotPercent,
 				r.HeadshotKills, r.BodyshotKills, r.LegshotKills,
 				r.HeadshotHit, r.BodyshotHit, r.LegshotHit,
@@ -185,7 +246,7 @@ func insertMatchPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Mat
 	}
 
 	columns := []string{
-		"id", "player_id", "match_id", "rating", "acs", "kd", "kast", "adr",
+		"id", "player_id", "match_id", "match_date", "rating", "acs", "kd", "kast", "adr",
 		"kills", "deaths", "assists", "first_kills", "first_deaths",
 		"trade_kills", "traded_deaths", "suicides", "teammates_killed", "deaths_by_spike", "chain_kills",
 		"double_kills", "triple_kills", "quadra_kills", "penta_kills", "multi_kills",
@@ -195,7 +256,10 @@ func insertMatchPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Mat
 		"headshot_percent", "headshot_kills", "bodyshot_kills", "legshot_kills",
 		"headshot_hit", "bodyshot_hit", "legshot_hit",
 		"damage_given", "damage_taken", "impact_score",
-		"matches_played", "rounds_played", "rounds_win_rate_percent", "is_overtime", "created_at",
+		"matches_played", "rounds_played", "rounds_win_rate_percent", "is_overtime",
+		// Phase 5 columns for TimescaleDB CA support
+		"rounds_won", "first_kills_traded", "first_deaths_traded", "mvp", "flawless_rounds", "match_won",
+		"created_at",
 	}
 
 	_, err := tx.CopyFrom(
@@ -205,7 +269,7 @@ func insertMatchPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Mat
 		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
 			r := rows[i]
 			return []any{
-				r.ID, r.PlayerID, r.MatchID, r.Rating, r.ACS, r.KD, r.KAST, r.ADR,
+				r.ID, r.PlayerID, r.MatchID, r.MatchDate, r.Rating, r.ACS, r.KD, r.KAST, r.ADR,
 				r.Kills, r.Deaths, r.Assists, r.FirstKills, r.FirstDeaths,
 				r.TradeKills, r.TradedDeaths, r.Suicides, r.TeammatesKilled, r.DeathsBySpike, r.ChainKills,
 				r.DoubleKills, r.TripleKills, r.QuadraKills, r.PentaKills, r.MultiKills,
@@ -215,7 +279,10 @@ func insertMatchPlayerStats(ctx context.Context, tx pgx.Tx, rows []aggregate.Mat
 				r.HeadshotPercent, r.HeadshotKills, r.BodyshotKills, r.LegshotKills,
 				r.HeadshotHit, r.BodyshotHit, r.LegshotHit,
 				r.DamageGiven, r.DamageTaken, r.ImpactScore,
-				r.MatchesPlayed, r.RoundsPlayed, r.RoundsWinRatePercent, r.IsOvertime, r.CreatedAt,
+				r.MatchesPlayed, r.RoundsPlayed, r.RoundsWinRatePercent, r.IsOvertime,
+				// Phase 5 columns
+				r.RoundsWon, r.FirstKillsTraded, r.FirstDeathsTraded, r.MVP, r.FlawlessRounds, r.MatchWon,
+				r.CreatedAt,
 			}, nil
 		}),
 	)
@@ -229,7 +296,7 @@ func insertTeamMatchStats(ctx context.Context, tx pgx.Tx, rows []aggregate.TeamM
 	}
 
 	columns := []string{
-		"id", "team_id", "match_id", "match_type",
+		"id", "team_id", "match_id", "match_date", "match_type",
 		"rounds_played", "rounds_won", "rounds_lost", "round_win_rate",
 		"kd", "avg_kpr", "avg_dpr", "avg_apr", "avg_adr", "avg_acs", "damage_delta",
 		"kills", "deaths", "first_kills", "first_deaths",
@@ -249,7 +316,7 @@ func insertTeamMatchStats(ctx context.Context, tx pgx.Tx, rows []aggregate.TeamM
 		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
 			r := rows[i]
 			return []any{
-				r.ID, r.TeamID, r.MatchID, r.MatchType,
+				r.ID, r.TeamID, r.MatchID, r.MatchDate, r.MatchType,
 				r.RoundsPlayed, r.RoundsWon, r.RoundsLost, r.RoundWinRate,
 				r.KD, r.AvgKPR, r.AvgDPR, r.AvgAPR, r.AvgADR, r.AvgACS, r.DamageDelta,
 				r.Kills, r.Deaths, r.FirstKills, r.FirstDeaths,
@@ -273,7 +340,7 @@ func insertTeamMatchSideStats(ctx context.Context, tx pgx.Tx, rows []aggregate.T
 	}
 
 	columns := []string{
-		"id", "team_id", "match_id", "match_type", "team_side", "side_outcome",
+		"id", "team_id", "match_id", "match_date", "match_type", "team_side", "side_outcome",
 		"rounds_played", "rounds_won", "rounds_lost", "round_win_rate",
 		"kd", "avg_kpr", "avg_dpr", "avg_apr", "avg_adr", "avg_acs", "damage_delta",
 		"kills", "deaths", "first_kills", "first_deaths",
@@ -291,7 +358,7 @@ func insertTeamMatchSideStats(ctx context.Context, tx pgx.Tx, rows []aggregate.T
 		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
 			r := rows[i]
 			return []any{
-				r.ID, r.TeamID, r.MatchID, r.MatchType, r.TeamSide, r.SideOutcome,
+				r.ID, r.TeamID, r.MatchID, r.MatchDate, r.MatchType, r.TeamSide, r.SideOutcome,
 				r.RoundsPlayed, r.RoundsWon, r.RoundsLost, r.RoundWinRate,
 				r.KD, r.AvgKPR, r.AvgDPR, r.AvgAPR, r.AvgADR, r.AvgACS, r.DamageDelta,
 				r.Kills, r.Deaths, r.FirstKills, r.FirstDeaths,
@@ -300,6 +367,182 @@ func insertTeamMatchSideStats(ctx context.Context, tx pgx.Tx, rows []aggregate.T
 				r.ClutchesPlayed, r.ClutchesWon, r.ClutchesLoss, r.ClutchesWR,
 				r.IsMatchOvertime, r.RoundsOvertimeWon, r.RoundsOvertimeLost,
 				r.CreatedAt,
+			}, nil
+		}),
+	)
+	return err
+}
+
+// insertMatchPlayerDuels inserts match player duels using COPY protocol.
+func insertMatchPlayerDuels(ctx context.Context, tx pgx.Tx, rows []aggregate.MatchPlayerDuelsRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	columns := []string{
+		"id", "match_id", "player_id", "opponent_id",
+		"kills", "deaths", "first_kills", "first_deaths",
+		"damage_given", "damage_taken", "headshot_kills",
+		"created_at",
+	}
+
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"match_player_duels_agregate"},
+		columns,
+		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+			r := rows[i]
+			return []any{
+				r.ID, r.MatchID, r.PlayerID, r.OpponentID,
+				r.Kills, r.Deaths, r.FirstKills, r.FirstDeaths,
+				r.DamageGiven, r.DamageTaken, r.HeadshotKills,
+				r.CreatedAt,
+			}, nil
+		}),
+	)
+	return err
+}
+
+// insertMatchPlayerWeaponStats inserts match player weapon stats using COPY protocol.
+func insertMatchPlayerWeaponStats(ctx context.Context, tx pgx.Tx, rows []aggregate.MatchPlayerWeaponStatsRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	columns := []string{
+		"id", "match_id", "match_date", "player_id", "weapon_id",
+		"weapon_name", "weapon_category",
+		"kills", "deaths", "damage_given", "damage_taken",
+		"first_kills", "headshot_kills", "bodyshot_kills", "legshot_kills",
+		"created_at",
+	}
+
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"match_player_weapon_stats_agregate"},
+		columns,
+		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+			r := rows[i]
+			return []any{
+				r.ID, r.MatchID, r.MatchDate, r.PlayerID, r.WeaponID,
+				r.WeaponName, r.WeaponCategory,
+				r.Kills, r.Deaths, r.DamageGiven, r.DamageTaken,
+				r.FirstKills, r.HeadshotKills, r.BodyshotKills, r.LegshotKills,
+				r.CreatedAt,
+			}, nil
+		}),
+	)
+	return err
+}
+
+// insertRoundTeamStats inserts round team stats using COPY protocol.
+func insertRoundTeamStats(ctx context.Context, tx pgx.Tx, rows []aggregate.RoundTeamStatsRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	columns := []string{
+		"id", "round_id", "team_id", "match_date", "team_tag",
+		"credits_spent", "credits_remaining", "buy_type",
+		"kills", "deaths", "assists", "damage_given", "damage_taken",
+		"first_kills", "first_deaths", "trade_kills", "traded_deaths",
+		"side", "situation", "round_won", "is_overtime",
+		"created_at",
+	}
+
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"round_team_stats_agregate"},
+		columns,
+		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+			r := rows[i]
+			return []any{
+				r.ID, r.RoundID, r.TeamID, r.MatchDate, r.TeamTag,
+				r.CreditsSpent, r.CreditsRemaining, r.BuyType,
+				r.Kills, r.Deaths, r.Assists, r.DamageGiven, r.DamageTaken,
+				r.FirstKills, r.FirstDeaths, r.TradeKills, r.TradedDeaths,
+				r.Side, r.Situation, r.RoundWon, r.IsOvertime,
+				r.CreatedAt,
+			}, nil
+		}),
+	)
+	return err
+}
+
+// insertPlayerClutchStats inserts player clutch stats (denormalized for CA) using COPY protocol.
+func insertPlayerClutchStats(ctx context.Context, tx pgx.Tx, rows []aggregate.PlayerClutchStatsRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	columns := []string{
+		"id", "match_id", "match_date", "player_id", "clutch_type",
+		"played", "won", "created_at",
+	}
+
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"player_clutch_stats_agregate"},
+		columns,
+		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+			r := rows[i]
+			return []any{
+				r.ID, r.MatchID, r.MatchDate, r.PlayerID, r.ClutchType,
+				r.Played, r.Won, r.CreatedAt,
+			}, nil
+		}),
+	)
+	return err
+}
+
+// insertCompositionWeaponStats inserts composition weapon stats (denormalized for CA) using COPY protocol.
+func insertCompositionWeaponStats(ctx context.Context, tx pgx.Tx, rows []aggregate.CompositionWeaponStatsRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	columns := []string{
+		"id", "match_id", "match_date", "composition_hash", "weapon_category",
+		"total_kills", "headshot_kills", "bodyshot_kills", "legshot_kills",
+		"total_damage", "created_at",
+	}
+
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"composition_weapon_stats_agregate"},
+		columns,
+		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+			r := rows[i]
+			return []any{
+				r.ID, r.MatchID, r.MatchDate, r.CompositionHash, r.WeaponCategory,
+				r.TotalKills, r.HeadshotKills, r.BodyshotKills, r.LegshotKills,
+				r.TotalDamage, r.CreatedAt,
+			}, nil
+		}),
+	)
+	return err
+}
+
+// insertCompositionClutchStats inserts composition clutch stats (denormalized for CA) using COPY protocol.
+func insertCompositionClutchStats(ctx context.Context, tx pgx.Tx, rows []aggregate.CompositionClutchStatsRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	columns := []string{
+		"id", "match_id", "match_date", "composition_hash", "clutch_type",
+		"played", "won", "created_at",
+	}
+
+	_, err := tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"composition_clutch_stats_agregate"},
+		columns,
+		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
+			r := rows[i]
+			return []any{
+				r.ID, r.MatchID, r.MatchDate, r.CompositionHash, r.ClutchType,
+				r.Played, r.Won, r.CreatedAt,
 			}, nil
 		}),
 	)

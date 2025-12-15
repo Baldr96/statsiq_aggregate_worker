@@ -7,7 +7,7 @@ import (
 // ComputeClutches detects clutch situations in all rounds.
 // A clutch occurs when a player is the last survivor of their team facing 1-5 opponents.
 // The clutch must be confirmed after 3 seconds of being alone.
-func ComputeClutches(rounds []RoundData, events []RoundEventData, playerTeam map[uuid.UUID]uuid.UUID, teamPlayers map[uuid.UUID][]uuid.UUID) []ClutchResult {
+func ComputeClutches(rounds []RoundData, events []RoundEventData, playerTeam map[uuid.UUID]uuid.UUID, teamPlayers map[uuid.UUID][]uuid.UUID, teamTagMap map[uuid.UUID]string) []ClutchResult {
 	// Group events by round
 	eventsByRound := make(map[uuid.UUID][]RoundEventData)
 	for _, e := range events {
@@ -17,7 +17,7 @@ func ComputeClutches(rounds []RoundData, events []RoundEventData, playerTeam map
 	var results []ClutchResult
 
 	for _, round := range rounds {
-		clutch := detectClutchInRound(round, eventsByRound[round.ID], playerTeam, teamPlayers)
+		clutch := detectClutchInRound(round, eventsByRound[round.ID], playerTeam, teamPlayers, teamTagMap)
 		if clutch != nil {
 			results = append(results, *clutch)
 		}
@@ -27,7 +27,7 @@ func ComputeClutches(rounds []RoundData, events []RoundEventData, playerTeam map
 }
 
 // detectClutchInRound detects a clutch situation in a single round.
-func detectClutchInRound(round RoundData, events []RoundEventData, playerTeam map[uuid.UUID]uuid.UUID, teamPlayers map[uuid.UUID][]uuid.UUID) *ClutchResult {
+func detectClutchInRound(round RoundData, events []RoundEventData, playerTeam map[uuid.UUID]uuid.UUID, teamPlayers map[uuid.UUID][]uuid.UUID, teamTagMap map[uuid.UUID]string) *ClutchResult {
 	// Initialize all players as alive
 	alive := make(map[uuid.UUID]bool)
 	for _, players := range teamPlayers {
@@ -72,12 +72,12 @@ func detectClutchInRound(round RoundData, events []RoundEventData, playerTeam ma
 			}
 
 			// Count opponents alive
-			opponentTeam := OtherTeam(victimTeam)
+			opponentTeam := GetOtherTeamID(victimTeam, teamPlayers)
 			opponentsAlive := countAlive(teamPlayers[opponentTeam], alive)
 
 			if opponentsAlive > 0 && opponentsAlive <= 5 {
 				// Potential clutch situation
-				side := DetermineSide(round.RoundNumber, victimTeam)
+				side := DetermineSide(round.RoundNumber, victimTeam, teamTagMap)
 				situation := determineSituation(round, kill.TimestampMS)
 
 				// Get IDs of opponents who are alive at clutch start

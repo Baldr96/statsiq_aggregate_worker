@@ -14,6 +14,8 @@ func BuildTeamMatchStats(
 	clutches []ClutchResult,
 	multiKillResults map[uuid.UUID]map[uuid.UUID]*MultiKillResult,
 	playerTeam map[uuid.UUID]uuid.UUID,
+	teamIDs []uuid.UUID,
+	teamTagMap map[uuid.UUID]string,
 	now time.Time,
 ) []TeamMatchStatsRow {
 	// Calculate match-level flags
@@ -21,7 +23,7 @@ func BuildTeamMatchStats(
 
 	// Group round stats by team AND by player for averaging
 	statsByTeamPlayer := make(map[uuid.UUID]map[uuid.UUID][]RoundPlayerStatsRow)
-	for _, teamID := range []uuid.UUID{RedTeamID, BlueTeamID} {
+	for _, teamID := range teamIDs {
 		statsByTeamPlayer[teamID] = make(map[uuid.UUID][]RoundPlayerStatsRow)
 	}
 	for _, rps := range roundPlayerStats {
@@ -33,7 +35,7 @@ func BuildTeamMatchStats(
 	}
 
 	// Analyze rounds for each team
-	roundInfoByTeam := analyzeRoundsForTeams(rounds, playerTeam)
+	roundInfoByTeam := analyzeRoundsForTeams(rounds, teamIDs, teamTagMap)
 
 	// Group clutches by team (clutcher only)
 	clutchesByTeam := make(map[uuid.UUID][]ClutchResult)
@@ -46,7 +48,7 @@ func BuildTeamMatchStats(
 
 	var rows []TeamMatchStatsRow
 
-	for _, teamID := range []uuid.UUID{RedTeamID, BlueTeamID} {
+	for _, teamID := range teamIDs {
 		teamPlayerStats := statsByTeamPlayer[teamID]
 		teamRoundInfo := roundInfoByTeam[teamID]
 		teamClutches := clutchesByTeam[teamID]
@@ -171,11 +173,12 @@ func BuildTeamMatchStats(
 			clutchesWR = float64(clutchesWon) / float64(clutchesPlayed) * 100
 		}
 
-		// Calculate match_won
+		// Calculate match_won based on team tag
 		matchWon := false
-		if teamID == RedTeamID && data.TeamRedScore > data.TeamBlueScore {
+		teamTag := teamTagMap[teamID]
+		if (teamTag == "Red" || teamTag == "RED") && data.TeamRedScore > data.TeamBlueScore {
 			matchWon = true
-		} else if teamID == BlueTeamID && data.TeamBlueScore > data.TeamRedScore {
+		} else if (teamTag == "Blue" || teamTag == "BLUE") && data.TeamBlueScore > data.TeamRedScore {
 			matchWon = true
 		}
 
@@ -196,6 +199,7 @@ func BuildTeamMatchStats(
 			ID:                  uuid.New(),
 			TeamID:              teamID,
 			MatchID:             data.MatchID,
+			MatchDate:           data.MatchDate,
 			MatchType:           data.MatchType,
 			RoundsPlayed:        roundsPlayed,
 			RoundsWon:           roundsWon,
@@ -243,18 +247,18 @@ func BuildTeamMatchStats(
 }
 
 // analyzeRoundsForTeams analyzes round wins/losses by team and side.
-func analyzeRoundsForTeams(rounds []RoundData, playerTeam map[uuid.UUID]uuid.UUID) map[uuid.UUID]*TeamRoundInfo {
-	info := map[uuid.UUID]*TeamRoundInfo{
-		RedTeamID:  {},
-		BlueTeamID: {},
+func analyzeRoundsForTeams(rounds []RoundData, teamIDs []uuid.UUID, teamTagMap map[uuid.UUID]string) map[uuid.UUID]*TeamRoundInfo {
+	info := make(map[uuid.UUID]*TeamRoundInfo)
+	for _, teamID := range teamIDs {
+		info[teamID] = &TeamRoundInfo{}
 	}
 
 	for _, round := range rounds {
-		for _, teamID := range []uuid.UUID{RedTeamID, BlueTeamID} {
+		for _, teamID := range teamIDs {
 			teamInfo := info[teamID]
 			teamInfo.Total++
 
-			side := DetermineSide(round.RoundNumber, teamID)
+			side := DetermineSide(round.RoundNumber, teamID, teamTagMap)
 			if side == "Attack" {
 				teamInfo.AttackPlayed++
 			} else {

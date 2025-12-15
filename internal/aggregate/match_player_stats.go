@@ -1,17 +1,22 @@
 package aggregate
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 // BuildMatchPlayerStats aggregates round stats into match-level player statistics.
+// Includes Phase 5 columns: rounds_won, first_kills_traded, first_deaths_traded, mvp, flawless_rounds.
 func BuildMatchPlayerStats(
 	data *MatchData,
 	roundPlayerStats []RoundPlayerStatsRow,
 	clutches []ClutchResult,
 	multiKillResults map[uuid.UUID]map[uuid.UUID]*MultiKillResult,
+	entries map[uuid.UUID]*EntryResult,
+	trades map[uuid.UUID]map[uuid.UUID]*TradeResult,
+	playerTeam map[uuid.UUID]uuid.UUID,
 	now time.Time,
 ) []MatchPlayerStatsRow {
 	// Calculate is_overtime at match level
@@ -23,19 +28,32 @@ func BuildMatchPlayerStats(
 		statsByPlayer[rps.PlayerID] = append(statsByPlayer[rps.PlayerID], rps)
 	}
 
+	// Group round stats by round for flawless calculation
+	statsByRound := make(map[uuid.UUID][]RoundPlayerStatsRow)
+	for _, rps := range roundPlayerStats {
+		statsByRound[rps.RoundID] = append(statsByRound[rps.RoundID], rps)
+	}
+
 	// Group clutches by player (clutcher only)
 	clutchesByPlayer := make(map[uuid.UUID][]ClutchResult)
 	for _, c := range clutches {
 		clutchesByPlayer[c.ClutcherID] = append(clutchesByPlayer[c.ClutcherID], c)
 	}
 
-	// Build player -> team mapping for rounds won calculation
-	playerTeamMap := make(map[uuid.UUID]uuid.UUID)
-	for _, mp := range data.MatchPlayers {
-		if mp.TeamID != nil {
-			playerTeamMap[mp.PlayerID] = *mp.TeamID
-		}
+	// Pre-compute flawless rounds per team (rounds where team had 0 deaths)
+	flawlessRoundsByTeam := computeFlawlessRounds(data.Rounds, statsByRound, playerTeam)
+
+	// Build teamTagMap for this match
+	teamTagMap := BuildTeamTagMap(data.MatchPlayers)
+
+	// Determine winning team tag based on scores
+	var winningTeamTag string
+	if data.TeamRedScore > data.TeamBlueScore {
+		winningTeamTag = "Red"
+	} else if data.TeamBlueScore > data.TeamRedScore {
+		winningTeamTag = "Blue"
 	}
+	// If tied, winningTeamTag is ""
 
 	var rows []MatchPlayerStatsRow
 
@@ -116,9 +134,9 @@ func BuildMatchPlayerStats(
 
 		// Calculate rounds won by player's team
 		var roundsWinRatePercent float64
-		playerTeamID, hasTeam := playerTeamMap[playerID]
+		var roundsWon int
+		playerTeamID, hasTeam := playerTeam[playerID]
 		if hasTeam {
-			roundsWon := 0
 			for _, round := range data.Rounds {
 				if round.WinnerTeamID != nil && *round.WinnerTeamID == playerTeamID {
 					roundsWon++
@@ -127,6 +145,17 @@ func BuildMatchPlayerStats(
 			if roundsPlayed > 0 {
 				roundsWinRatePercent = float64(roundsWon) / float64(roundsPlayed) * 100
 			}
+		}
+
+		// Calculate first kills/deaths traded
+		firstKillsTraded, firstDeathsTraded := computeFirstKillDeathTraded(
+			playerID, roundStats, entries, trades,
+		)
+
+		// Calculate flawless rounds for this player's team
+		flawlessRounds := 0
+		if hasTeam {
+			flawlessRounds = flawlessRoundsByTeam[playerTeamID]
 		}
 
 		// Clutch stats by type
@@ -174,10 +203,15 @@ func BuildMatchPlayerStats(
 			}
 		}
 
+		// Determine if this player's team won (compare team tags)
+		playerTeamTag := teamTagMap[playerTeamID]
+		matchWon := hasTeam && winningTeamTag != "" && (playerTeamTag == winningTeamTag || playerTeamTag == strings.ToUpper(winningTeamTag))
+
 		row := MatchPlayerStatsRow{
 			ID:              uuid.New(),
 			PlayerID:        playerID,
 			MatchID:         &data.MatchID,
+			MatchDate:       data.MatchDate,
 			ACS:             &acs,
 			KD:              &kd,
 			KAST:            &kast,
@@ -210,25 +244,148 @@ func BuildMatchPlayerStats(
 			V4Won:           &v4Won,
 			V5Played:        &v5Played,
 			V5Won:           &v5Won,
-			HeadshotPercent: &hsPercent,
-			HeadshotKills:   &totalHeadshotKills,
-			BodyshotKills:   &totalBodyshotKills,
-			LegshotKills:    &totalLegshotKills,
-			HeadshotHit:     &totalHeadshotHit,
-			BodyshotHit:     &totalBodyshotHit,
-			LegshotHit:      &totalLegshotHit,
-			DamageGiven:     totalDamageGiven,
-			DamageTaken:     totalDamageTaken,
+			HeadshotPercent:      &hsPercent,
+			HeadshotKills:        &totalHeadshotKills,
+			BodyshotKills:        &totalBodyshotKills,
+			LegshotKills:         &totalLegshotKills,
+			HeadshotHit:          &totalHeadshotHit,
+			BodyshotHit:          &totalBodyshotHit,
+			LegshotHit:           &totalLegshotHit,
+			DamageGiven:          totalDamageGiven,
+			DamageTaken:          totalDamageTaken,
 			ImpactScore:          new(float64), // Default to 0.0
 			MatchesPlayed:        1,
 			RoundsPlayed:         roundsPlayed,
 			RoundsWinRatePercent: &roundsWinRatePercent,
 			IsOvertime:           isOvertime,
-			CreatedAt:       now,
+			// Phase 5 columns
+			RoundsWon:         roundsWon,
+			FirstKillsTraded:  firstKillsTraded,
+			FirstDeathsTraded: firstDeathsTraded,
+			MVP:               0, // Will be set after all players are processed
+			FlawlessRounds:    flawlessRounds,
+			MatchWon:          matchWon,
+			CreatedAt:         now,
 		}
 
 		rows = append(rows, row)
 	}
 
+	// Compute MVP: highest ACS on winning team (or highest overall if tie)
+	computeMVP(rows, playerTeam, teamTagMap, winningTeamTag)
+
 	return rows
+}
+
+// computeFlawlessRounds calculates rounds where each team had 0 deaths.
+func computeFlawlessRounds(
+	rounds []RoundData,
+	statsByRound map[uuid.UUID][]RoundPlayerStatsRow,
+	playerTeam map[uuid.UUID]uuid.UUID,
+) map[uuid.UUID]int {
+	result := make(map[uuid.UUID]int)
+
+	for _, round := range rounds {
+		roundStats := statsByRound[round.ID]
+
+		// Group deaths by team
+		deathsByTeam := make(map[uuid.UUID]int)
+		for _, rs := range roundStats {
+			teamID, hasTeam := playerTeam[rs.PlayerID]
+			if hasTeam {
+				deathsByTeam[teamID] += int(rs.Deaths)
+			}
+		}
+
+		// Count flawless for teams with 0 deaths
+		for teamID, deaths := range deathsByTeam {
+			if deaths == 0 {
+				result[teamID]++
+			}
+		}
+	}
+
+	return result
+}
+
+// computeFirstKillDeathTraded calculates first kills and deaths that were traded.
+// - FirstKillsTraded: rounds where player got first kill AND then died with that death being traded
+// - FirstDeathsTraded: rounds where player got first death AND that death was traded
+func computeFirstKillDeathTraded(
+	playerID uuid.UUID,
+	roundStats []RoundPlayerStatsRow,
+	entries map[uuid.UUID]*EntryResult,
+	trades map[uuid.UUID]map[uuid.UUID]*TradeResult,
+) (firstKillsTraded, firstDeathsTraded int) {
+	for _, rs := range roundStats {
+		entry := entries[rs.RoundID]
+		if entry == nil {
+			continue
+		}
+
+		roundTrades := trades[rs.RoundID]
+		if roundTrades == nil {
+			continue
+		}
+
+		playerTrade := roundTrades[playerID]
+
+		// FirstKillsTraded: player got first kill AND was subsequently traded (died and teammate avenged)
+		if rs.FirstKill && entry.EntryKillerID == playerID {
+			// Player got the first kill - check if they died and were traded
+			if rs.Deaths > 0 && playerTrade != nil && playerTrade.TradedDeaths > 0 {
+				firstKillsTraded++
+			}
+		}
+
+		// FirstDeathsTraded: player got first death AND that death was traded
+		if rs.FirstDeath && entry.EntryVictimID == playerID {
+			// Player was the first death - check if their death was traded
+			if playerTrade != nil && playerTrade.TradedDeaths > 0 {
+				firstDeathsTraded++
+			}
+		}
+	}
+
+	return firstKillsTraded, firstDeathsTraded
+}
+
+// computeMVP sets MVP=1 for the player with highest ACS on the winning team.
+// If match is tied, MVP goes to player with highest ACS overall.
+func computeMVP(rows []MatchPlayerStatsRow, playerTeam map[uuid.UUID]uuid.UUID, teamTagMap map[uuid.UUID]string, winningTeamTag string) {
+	if len(rows) == 0 {
+		return
+	}
+
+	var mvpIndex int
+	var highestACS float64 = -1
+
+	for i, row := range rows {
+		acs := float64(0)
+		if row.ACS != nil {
+			acs = *row.ACS
+		}
+
+		// If there's a winning team, only consider players on that team
+		if winningTeamTag != "" {
+			playerTeamID, hasTeam := playerTeam[row.PlayerID]
+			if !hasTeam {
+				continue
+			}
+			playerTeamTag := teamTagMap[playerTeamID]
+			if playerTeamTag != winningTeamTag && playerTeamTag != strings.ToUpper(winningTeamTag) {
+				continue
+			}
+		}
+
+		if acs > highestACS {
+			highestACS = acs
+			mvpIndex = i
+		}
+	}
+
+	// Set MVP for the winner
+	if highestACS >= 0 {
+		rows[mvpIndex].MVP = 1
+	}
 }

@@ -92,6 +92,7 @@ func BuildRoundPlayerStats(
 				ID:               uuid.New(),
 				RoundID:          round.ID,
 				PlayerID:         rps.PlayerID,
+				MatchDate:        data.MatchDate,
 				LoadoutID:        loadoutID,
 				Agent:            playerAgent[rps.PlayerID],
 				Rating:           0, // TODO: Calculate rating

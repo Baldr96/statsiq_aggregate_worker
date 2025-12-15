@@ -45,8 +45,9 @@ func main() {
 
 	canonicalReader := db.NewCanonicalReader(pool)
 	aggregateWriter := db.NewAggregateWriter(pool)
+	caRefresher := db.NewCARefresher(pool)
 
-	proc := processor.NewAggregateProcessor(ctx, canonicalReader, aggregateWriter)
+	proc := processor.NewAggregateProcessor(ctx, canonicalReader, aggregateWriter, caRefresher)
 	q := queue.NewRedisQueue(redisClient)
 
 	handler := func(payload []byte) error {
